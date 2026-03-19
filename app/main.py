@@ -2,12 +2,15 @@ from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import Base, engine, get_db
-from app import crud, models, schemas
+from app import crud, schemas
+from app.auth import router as auth_router
 
 
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Student Engagement System API")
+
+app.include_router(auth_router)
 
 
 @app.get("/")
@@ -21,9 +24,7 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     if existing_user:
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    # Пока без настоящего хеширования, временно
     fake_password_hash = f"hashed_{user.password}"
-
     return crud.create_user(db, user, fake_password_hash)
 
 

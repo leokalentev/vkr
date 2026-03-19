@@ -1,6 +1,9 @@
 from datetime import datetime, date
 from typing import Optional
-from pydantic import BaseModel, EmailStr, ConfigDict
+
+from pydantic import BaseModel, ConfigDict, EmailStr
+
+from app.models import UserRole
 
 
 # =========================
@@ -12,7 +15,7 @@ class UserBase(BaseModel):
     first_name: str
     last_name: str
     middle_name: Optional[str] = None
-    role: str
+    role: UserRole
 
 
 class UserCreate(UserBase):
@@ -93,3 +96,26 @@ class LessonRead(LessonBase):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# =========================
+# AUTH
+# =========================
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str
+    first_name: str
+    last_name: str
+    middle_name: str | None = None
+    role: UserRole

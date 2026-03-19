@@ -61,3 +61,22 @@ def create_lesson(db: Session, lesson: schemas.LessonCreate):
 
 def get_lessons(db: Session):
     return db.query(models.Lesson).all()
+
+def create_user_with_hashed_password(db: Session, user_data, password_hash: str):
+    db_user = models.User(
+        email=user_data.email,
+        first_name=user_data.first_name,
+        last_name=user_data.last_name,
+        middle_name=user_data.middle_name,
+        role=user_data.role,
+        password_hash=password_hash,
+        is_active=True,
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+
+def authenticate_user(db: Session, email: str):
+    return db.query(models.User).filter(models.User.email == email).first()

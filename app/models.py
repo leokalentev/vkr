@@ -19,6 +19,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.database import Base
 
 
@@ -46,6 +47,10 @@ class RecommendationType(str, PyEnum):
     MOTIVATION = "motivation"
 
 
+def enum_values(enum_cls):
+    return [item.value for item in enum_cls]
+
+
 # =========================================
 # USERS
 # =========================================
@@ -54,7 +59,15 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    role: Mapped[UserRole] = mapped_column(Enum(UserRole, name="user_role"), nullable=False)
+    role: Mapped[UserRole] = mapped_column(
+        Enum(
+            UserRole,
+            name="user_role",
+            values_callable=enum_values,
+            validate_strings=True,
+        ),
+        nullable=False,
+    )
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     first_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -246,7 +259,12 @@ class Attendance(Base):
         BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     status: Mapped[AttendanceStatus] = mapped_column(
-        Enum(AttendanceStatus, name="attendance_status"),
+        Enum(
+            AttendanceStatus,
+            name="attendance_status",
+            values_callable=enum_values,
+            validate_strings=True,
+        ),
         default=AttendanceStatus.PRESENT,
         nullable=False,
     )
@@ -421,7 +439,13 @@ class Recommendation(Base):
         BigInteger, ForeignKey("lessons.id", ondelete="SET NULL"), nullable=True
     )
     recommendation_type: Mapped[RecommendationType] = mapped_column(
-        Enum(RecommendationType, name="recommendation_type"), nullable=False
+        Enum(
+            RecommendationType,
+            name="recommendation_type",
+            values_callable=enum_values,
+            validate_strings=True,
+        ),
+        nullable=False,
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)

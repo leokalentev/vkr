@@ -85,6 +85,33 @@ def get_current_user(
     return user
 
 
+def get_current_active_user(
+    current_user: models.User = Depends(get_current_user)
+):
+    if not current_user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Inactive user"
+        )
+    return current_user
+
+
+def require_roles(*allowed_roles: models.UserRole):
+    def role_checker(
+        current_user: models.User = Depends(get_current_active_user)
+    ):
+        if current_user.role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not enough permissions"
+            )
+        return current_user
+
+    return role_checker
+
+
 @router.get("/me", response_model=schemas.UserRead)
-def read_current_user(current_user: models.User = Depends(get_current_user)):
+def read_current_user(
+    current_user: models.User = Depends(get_current_active_user)
+):
     return current_user

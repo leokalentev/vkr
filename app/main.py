@@ -161,8 +161,8 @@ def import_students_to_group(
         students_data = read_students_excel(file_bytes)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception:
-        raise HTTPException(status_code=400, detail="Failed to read Excel file")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read Excel file: {str(e)}")
 
     imported_students = []
 
@@ -235,3 +235,68 @@ def read_lessons(
     current_user: models.User = Depends(get_current_active_user),
 ):
     return crud.get_lessons(db)
+
+
+# =========================
+# ASSESSMENT RESULTS
+# =========================
+
+@app.post("/assessment-results/", response_model=schemas.AssessmentResultRead)
+def create_or_update_assessment_result(
+    result: schemas.AssessmentResultCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
+    ),
+):
+    lesson = crud.get_lesson_by_id(db, result.lesson_id)
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+
+    student = crud.get_user_by_id(db, result.student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    if student.role != models.UserRole.STUDENT:
+        raise HTTPException(status_code=400, detail="Specified user is not a student")
+
+    membership = crud.get_group_membership(db, lesson.group_id, result.student_id)
+    if not membership:
+        raise HTTPException(
+            status_code=400,
+            detail="Student is not assigned to the lesson group"
+        )
+
+    if current_user.role == models.UserRole.TEACHER and lesson.teacher_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Teacher can grade only their own lessons"
+        )
+
+    return crud.create_or_update_assessment_result(db, result)
+
+
+@app.get("/lessons/{lesson_id}/results", response_model=list[schemas.AssessmentResultRead])
+def get_lesson_results(
+    lesson_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+):
+    lesson = crud.get_lesson_by_id(db, lesson_id)
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+
+    return crud.get_results_by_lesson(db, lesson_id)
+
+
+@app.get("/students/{student_id}/results", response_model=list[schemas.AssessmentResultRead])
+def get_student_results(
+    student_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+):
+    student = crud.get_user_by_id(db, student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    return crud.get_results_by_student(db, student_id)

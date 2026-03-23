@@ -91,6 +91,10 @@ def get_lessons(db: Session):
     return db.query(models.Lesson).all()
 
 
+def get_lesson_by_id(db: Session, lesson_id: int):
+    return db.query(models.Lesson).filter(models.Lesson.id == lesson_id).first()
+
+
 def get_group_membership(db: Session, group_id: int, student_id: int):
     return (
         db.query(models.GroupMembership)
@@ -147,6 +151,7 @@ def get_groups_by_student(db: Session, student_id: int):
     )
     return [m.group for m in memberships]
 
+
 def create_student_with_profile(
     db: Session,
     email: str,
@@ -180,3 +185,68 @@ def create_student_with_profile(
     db.refresh(db_user)
 
     return db_user
+
+
+def get_assessment_result(db: Session, lesson_id: int, student_id: int):
+    return (
+        db.query(models.AssessmentResult)
+        .filter(
+            models.AssessmentResult.lesson_id == lesson_id,
+            models.AssessmentResult.student_id == student_id,
+        )
+        .first()
+    )
+
+
+def create_or_update_assessment_result(
+    db: Session,
+    result_data: schemas.AssessmentResultCreate,
+):
+    existing = get_assessment_result(db, result_data.lesson_id, result_data.student_id)
+
+    if existing:
+        existing.score = result_data.score
+        existing.max_score = result_data.max_score
+        existing.grade_label = result_data.grade_label
+        existing.attendance_weight = result_data.attendance_weight
+        existing.academic_weight = result_data.academic_weight
+        existing.engagement_weight = result_data.engagement_weight
+        existing.final_score = result_data.final_score
+        existing.teacher_comment = result_data.teacher_comment
+
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    db_result = models.AssessmentResult(
+        lesson_id=result_data.lesson_id,
+        student_id=result_data.student_id,
+        score=result_data.score,
+        max_score=result_data.max_score,
+        grade_label=result_data.grade_label,
+        attendance_weight=result_data.attendance_weight,
+        academic_weight=result_data.academic_weight,
+        engagement_weight=result_data.engagement_weight,
+        final_score=result_data.final_score,
+        teacher_comment=result_data.teacher_comment,
+    )
+    db.add(db_result)
+    db.commit()
+    db.refresh(db_result)
+    return db_result
+
+
+def get_results_by_lesson(db: Session, lesson_id: int):
+    return (
+        db.query(models.AssessmentResult)
+        .filter(models.AssessmentResult.lesson_id == lesson_id)
+        .all()
+    )
+
+
+def get_results_by_student(db: Session, student_id: int):
+    return (
+        db.query(models.AssessmentResult)
+        .filter(models.AssessmentResult.student_id == student_id)
+        .all()
+    )

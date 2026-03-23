@@ -120,6 +120,7 @@ class RegisterRequest(BaseModel):
     middle_name: str | None = None
     role: UserRole
 
+
 # =========================
 # GROUP MEMBERSHIPS
 # =========================
@@ -151,6 +152,11 @@ class GroupShortRead(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+# =========================
+# IMPORT
+# =========================
+
 class ImportedStudentRead(BaseModel):
     id: int
     email: EmailStr
@@ -166,3 +172,31 @@ class ImportStudentsResponse(BaseModel):
     group_id: int
     imported_count: int
     imported_students: list[ImportedStudentRead]
+
+
+# =========================
+# ASSESSMENT RESULTS
+# =========================
+
+class AssessmentResultBase(BaseModel):
+    lesson_id: int
+    student_id: int
+    score: Optional[float] = None
+    max_score: Optional[float] = None
+    grade_label: Optional[str] = None
+    attendance_weight: Optional[float] = None
+    academic_weight: Optional[float] = None
+    engagement_weight: Optional[float] = None
+    final_score: Optional[float] = None
+    teacher_comment: Optional[str] = None
+
+
+class AssessmentResultCreate(AssessmentResultBase):
+    pass
+
+
+class AssessmentResultRead(AssessmentResultBase):
+    id: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

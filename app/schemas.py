@@ -119,3 +119,50 @@ class RegisterRequest(BaseModel):
     last_name: str
     middle_name: str | None = None
     role: UserRole
+
+# =========================
+# GROUP MEMBERSHIPS
+# =========================
+
+class GroupMembershipRead(BaseModel):
+    group_id: int
+    student_id: int
+    joined_at: datetime
+    left_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class StudentShortRead(BaseModel):
+    id: int
+    email: EmailStr
+    first_name: str
+    last_name: str
+    middle_name: Optional[str] = None
+    role: UserRole
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class GroupShortRead(BaseModel):
+    id: int
+    name: str
+    curator_id: Optional[int] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class ImportedStudentRead(BaseModel):
+    id: int
+    email: EmailStr
+    first_name: str
+    last_name: str
+    middle_name: Optional[str] = None
+    role: UserRole
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ImportStudentsResponse(BaseModel):
+    group_id: int
+    imported_count: int
+    imported_students: list[ImportedStudentRead]

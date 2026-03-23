@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
 
@@ -19,11 +19,35 @@ def create_user(db: Session, user: schemas.UserCreate, password_hash: str):
     return db_user
 
 
+def create_user_with_hashed_password(db: Session, user_data, password_hash: str):
+    db_user = models.User(
+        email=user_data.email,
+        first_name=user_data.first_name,
+        last_name=user_data.last_name,
+        middle_name=user_data.middle_name,
+        role=user_data.role,
+        password_hash=password_hash,
+        is_active=True,
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+
 def get_users(db: Session):
     return db.query(models.User).all()
 
 
 def get_user_by_email(db: Session, email: str):
+    return db.query(models.User).filter(models.User.email == email).first()
+
+
+def get_user_by_id(db: Session, user_id: int):
+    return db.query(models.User).filter(models.User.id == user_id).first()
+
+
+def authenticate_user(db: Session, email: str):
     return db.query(models.User).filter(models.User.email == email).first()
 
 
@@ -40,6 +64,10 @@ def create_group(db: Session, group: schemas.GroupCreate):
 
 def get_groups(db: Session):
     return db.query(models.Group).all()
+
+
+def get_group_by_id(db: Session, group_id: int):
+    return db.query(models.Group).filter(models.Group.id == group_id).first()
 
 
 def create_lesson(db: Session, lesson: schemas.LessonCreate):
@@ -62,21 +90,93 @@ def create_lesson(db: Session, lesson: schemas.LessonCreate):
 def get_lessons(db: Session):
     return db.query(models.Lesson).all()
 
-def create_user_with_hashed_password(db: Session, user_data, password_hash: str):
+
+def get_group_membership(db: Session, group_id: int, student_id: int):
+    return (
+        db.query(models.GroupMembership)
+        .filter(
+            models.GroupMembership.group_id == group_id,
+            models.GroupMembership.student_id == student_id,
+        )
+        .first()
+    )
+
+
+def add_student_to_group(db: Session, group_id: int, student_id: int):
+    group = get_group_by_id(db, group_id)
+    if not group:
+        return None, "group_not_found"
+
+    student = get_user_by_id(db, student_id)
+    if not student:
+        return None, "student_not_found"
+
+    if student.role != models.UserRole.STUDENT:
+        return None, "user_is_not_student"
+
+    existing = get_group_membership(db, group_id, student_id)
+    if existing:
+        return None, "already_in_group"
+
+    membership = models.GroupMembership(
+        group_id=group_id,
+        student_id=student_id,
+    )
+    db.add(membership)
+    db.commit()
+    db.refresh(membership)
+    return membership, None
+
+
+def get_students_by_group(db: Session, group_id: int):
+    memberships = (
+        db.query(models.GroupMembership)
+        .options(joinedload(models.GroupMembership.student))
+        .filter(models.GroupMembership.group_id == group_id)
+        .all()
+    )
+    return [m.student for m in memberships]
+
+
+def get_groups_by_student(db: Session, student_id: int):
+    memberships = (
+        db.query(models.GroupMembership)
+        .options(joinedload(models.GroupMembership.group))
+        .filter(models.GroupMembership.student_id == student_id)
+        .all()
+    )
+    return [m.group for m in memberships]
+
+def create_student_with_profile(
+    db: Session,
+    email: str,
+    password_hash: str,
+    first_name: str,
+    last_name: str,
+    middle_name: str | None = None,
+    date_of_birth=None,
+):
     db_user = models.User(
-        email=user_data.email,
-        first_name=user_data.first_name,
-        last_name=user_data.last_name,
-        middle_name=user_data.middle_name,
-        role=user_data.role,
+        email=email,
+        first_name=first_name,
+        last_name=last_name,
+        middle_name=middle_name,
+        role=models.UserRole.STUDENT,
         password_hash=password_hash,
         is_active=True,
     )
     db.add(db_user)
+    db.flush()
+
+    student_identifier = f"student-{db_user.id}"
+
+    db_profile = models.StudentProfile(
+        user_id=db_user.id,
+        student_identifier=student_identifier,
+        date_of_birth=date_of_birth,
+    )
+    db.add(db_profile)
     db.commit()
     db.refresh(db_user)
+
     return db_user
-
-
-def authenticate_user(db: Session, email: str):
-    return db.query(models.User).filter(models.User.email == email).first()

@@ -238,6 +238,265 @@ def read_lessons(
 
 
 # =========================
+# ATTENDANCE
+# =========================
+
+@app.post("/attendance/", response_model=schemas.AttendanceRead)
+def create_or_update_attendance(
+    attendance: schemas.AttendanceCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
+    ),
+):
+    lesson = crud.get_lesson_by_id(db, attendance.lesson_id)
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+
+    student = crud.get_user_by_id(db, attendance.student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    if student.role != models.UserRole.STUDENT:
+        raise HTTPException(status_code=400, detail="Specified user is not a student")
+
+    membership = crud.get_group_membership(db, lesson.group_id, attendance.student_id)
+    if not membership:
+        raise HTTPException(
+            status_code=400,
+            detail="Student is not assigned to the lesson group"
+        )
+
+    if current_user.role == models.UserRole.TEACHER and lesson.teacher_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Teacher can mark attendance only for their own lessons"
+        )
+
+    return crud.create_or_update_attendance(db, attendance)
+
+
+@app.get("/lessons/{lesson_id}/attendance", response_model=list[schemas.AttendanceRead])
+def get_lesson_attendance(
+    lesson_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+):
+    lesson = crud.get_lesson_by_id(db, lesson_id)
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+
+    return crud.get_attendance_by_lesson(db, lesson_id)
+
+
+@app.get("/students/{student_id}/attendance", response_model=list[schemas.AttendanceRead])
+def get_student_attendance(
+    student_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+):
+    student = crud.get_user_by_id(db, student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    if student.role != models.UserRole.STUDENT:
+        raise HTTPException(status_code=400, detail="Specified user is not a student")
+
+    return crud.get_attendance_by_student(db, student_id)
+
+
+# =========================
+# ENGAGEMENT METRICS
+# =========================
+
+@app.post("/engagement-metrics/", response_model=schemas.EngagementMetricRead)
+def create_or_update_engagement_metric(
+    metric: schemas.EngagementMetricCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
+    ),
+):
+    lesson = crud.get_lesson_by_id(db, metric.lesson_id)
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+
+    student = crud.get_user_by_id(db, metric.student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    if student.role != models.UserRole.STUDENT:
+        raise HTTPException(status_code=400, detail="Specified user is not a student")
+
+    membership = crud.get_group_membership(db, lesson.group_id, metric.student_id)
+    if not membership:
+        raise HTTPException(
+            status_code=400,
+            detail="Student is not assigned to the lesson group"
+        )
+
+    if current_user.role == models.UserRole.TEACHER and lesson.teacher_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Teacher can save engagement metrics only for their own lessons"
+        )
+
+    return crud.create_or_update_engagement_metric(db, metric)
+
+
+@app.get(
+    "/lessons/{lesson_id}/engagement-metrics",
+    response_model=list[schemas.EngagementMetricRead]
+)
+def get_lesson_engagement_metrics(
+    lesson_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+):
+    lesson = crud.get_lesson_by_id(db, lesson_id)
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+
+    return crud.get_engagement_metrics_by_lesson(db, lesson_id)
+
+
+@app.get(
+    "/students/{student_id}/engagement-metrics",
+    response_model=list[schemas.EngagementMetricRead]
+)
+def get_student_engagement_metrics(
+    student_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+):
+    student = crud.get_user_by_id(db, student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    if student.role != models.UserRole.STUDENT:
+        raise HTTPException(status_code=400, detail="Specified user is not a student")
+
+    return crud.get_engagement_metrics_by_student(db, student_id)
+
+
+# =========================
+# ANALYTICS SUMMARY
+# =========================
+
+@app.get(
+    "/students/{student_id}/analytics-summary",
+    response_model=schemas.StudentAnalyticsSummary,
+)
+def get_student_analytics_summary(
+    student_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+):
+    student = crud.get_user_by_id(db, student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    if student.role != models.UserRole.STUDENT:
+        raise HTTPException(status_code=400, detail="Specified user is not a student")
+
+    return crud.build_student_analytics_summary(db, student_id)
+
+
+@app.get(
+    "/groups/{group_id}/analytics-summary",
+    response_model=schemas.GroupAnalyticsSummary,
+)
+def get_group_analytics_summary(
+    group_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+):
+    group = crud.get_group_by_id(db, group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    return crud.build_group_analytics_summary(db, group_id)
+
+
+# =========================
+# RECOMMENDATIONS
+# =========================
+
+@app.get(
+    "/students/{student_id}/recommendations",
+    response_model=list[schemas.RecommendationRead],
+)
+def get_student_recommendations(
+    student_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+):
+    student = crud.get_user_by_id(db, student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    if student.role != models.UserRole.STUDENT:
+        raise HTTPException(status_code=400, detail="Specified user is not a student")
+
+    return crud.get_recommendations_by_student(db, student_id)
+
+
+@app.post(
+    "/students/{student_id}/generate-recommendations",
+    response_model=schemas.StudentRecommendationsGenerationResponse,
+)
+def generate_student_recommendations(
+    student_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
+    ),
+):
+    student = crud.get_user_by_id(db, student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    if student.role != models.UserRole.STUDENT:
+        raise HTTPException(status_code=400, detail="Specified user is not a student")
+
+    return crud.generate_recommendations_for_student(db, student_id)
+
+
+@app.post(
+    "/groups/{group_id}/generate-recommendations",
+    response_model=schemas.GroupRecommendationsGenerationResponse,
+)
+def generate_group_recommendations(
+    group_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
+    ),
+):
+    group = crud.get_group_by_id(db, group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    return crud.generate_recommendations_for_group(db, group_id)
+
+
+@app.patch(
+    "/recommendations/{recommendation_id}/read",
+    response_model=schemas.RecommendationRead,
+)
+def mark_recommendation_as_read(
+    recommendation_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+):
+    recommendation = crud.mark_recommendation_as_read(db, recommendation_id)
+    if not recommendation:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+
+    return recommendation
+
+
+# =========================
 # ASSESSMENT RESULTS
 # =========================
 

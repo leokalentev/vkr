@@ -301,11 +301,13 @@ class EngagementMetric(Base):
         BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
 
-    presence_score: Mapped[float] = mapped_column(Numeric(6, 4), nullable=False)
-    attention_score: Mapped[float] = mapped_column(Numeric(6, 4), nullable=False)
-    head_pose_score: Mapped[float] = mapped_column(Numeric(6, 4), nullable=False)
-    activity_score: Mapped[float] = mapped_column(Numeric(6, 4), nullable=False)
-    stability_score: Mapped[float | None] = mapped_column(Numeric(6, 4), nullable=True)
+    presence_ratio: Mapped[float] = mapped_column(Numeric(6, 4), nullable=False)
+    face_match_confidence: Mapped[float | None] = mapped_column(Numeric(6, 4), nullable=True)
+    head_pose_forward_ratio: Mapped[float] = mapped_column(Numeric(6, 4), nullable=False)
+    head_pose_variance: Mapped[float] = mapped_column(Numeric(6, 4), nullable=False)
+    motion_level: Mapped[float] = mapped_column(Numeric(6, 4), nullable=False)
+    frame_stability: Mapped[float] = mapped_column(Numeric(6, 4), nullable=False)
+    grade_score: Mapped[float | None] = mapped_column(Numeric(6, 4), nullable=True)
 
     engagement_index: Mapped[float] = mapped_column(Numeric(6, 4), nullable=False)
 
@@ -319,13 +321,24 @@ class EngagementMetric(Base):
 
     __table_args__ = (
         UniqueConstraint("lesson_id", "student_id", name="uq_engagement_lesson_student"),
-        CheckConstraint("presence_score >= 0 AND presence_score <= 1", name="chk_presence_score"),
-        CheckConstraint("attention_score >= 0 AND attention_score <= 1", name="chk_attention_score"),
-        CheckConstraint("head_pose_score >= 0 AND head_pose_score <= 1", name="chk_head_pose_score"),
-        CheckConstraint("activity_score >= 0 AND activity_score <= 1", name="chk_activity_score"),
+        CheckConstraint("presence_ratio >= 0 AND presence_ratio <= 1", name="chk_presence_ratio"),
         CheckConstraint(
-            "stability_score IS NULL OR (stability_score >= 0 AND stability_score <= 1)",
-            name="chk_stability_score",
+            "face_match_confidence IS NULL OR (face_match_confidence >= 0 AND face_match_confidence <= 1)",
+            name="chk_face_match_confidence",
+        ),
+        CheckConstraint(
+            "head_pose_forward_ratio >= 0 AND head_pose_forward_ratio <= 1",
+            name="chk_head_pose_forward_ratio",
+        ),
+        CheckConstraint(
+            "head_pose_variance >= 0 AND head_pose_variance <= 1",
+            name="chk_head_pose_variance",
+        ),
+        CheckConstraint("motion_level >= 0 AND motion_level <= 1", name="chk_motion_level"),
+        CheckConstraint("frame_stability >= 0 AND frame_stability <= 1", name="chk_frame_stability"),
+        CheckConstraint(
+            "grade_score IS NULL OR (grade_score >= 0 AND grade_score <= 1)",
+            name="chk_grade_score",
         ),
         CheckConstraint(
             "engagement_index >= 0 AND engagement_index <= 1",

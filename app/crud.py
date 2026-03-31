@@ -187,6 +187,65 @@ def create_student_with_profile(
     return db_user
 
 
+def get_attendance_record(db: Session, lesson_id: int, student_id: int):
+    return (
+        db.query(models.Attendance)
+        .filter(
+            models.Attendance.lesson_id == lesson_id,
+            models.Attendance.student_id == student_id,
+        )
+        .first()
+    )
+
+
+def create_or_update_attendance(
+    db: Session,
+    attendance_data: schemas.AttendanceCreate,
+):
+    existing = get_attendance_record(
+        db,
+        attendance_data.lesson_id,
+        attendance_data.student_id,
+    )
+
+    if existing:
+        existing.status = attendance_data.status
+        existing.detected_by_cv = attendance_data.detected_by_cv
+        existing.confidence = attendance_data.confidence
+
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    db_attendance = models.Attendance(
+        lesson_id=attendance_data.lesson_id,
+        student_id=attendance_data.student_id,
+        status=attendance_data.status,
+        detected_by_cv=attendance_data.detected_by_cv,
+        confidence=attendance_data.confidence,
+    )
+    db.add(db_attendance)
+    db.commit()
+    db.refresh(db_attendance)
+    return db_attendance
+
+
+def get_attendance_by_lesson(db: Session, lesson_id: int):
+    return (
+        db.query(models.Attendance)
+        .filter(models.Attendance.lesson_id == lesson_id)
+        .all()
+    )
+
+
+def get_attendance_by_student(db: Session, student_id: int):
+    return (
+        db.query(models.Attendance)
+        .filter(models.Attendance.student_id == student_id)
+        .all()
+    )
+
+
 def get_assessment_result(db: Session, lesson_id: int, student_id: int):
     return (
         db.query(models.AssessmentResult)
@@ -249,4 +308,596 @@ def get_results_by_student(db: Session, student_id: int):
         db.query(models.AssessmentResult)
         .filter(models.AssessmentResult.student_id == student_id)
         .all()
+    )
+
+
+def get_engagement_metric(db: Session, lesson_id: int, student_id: int):
+    return (
+        db.query(models.EngagementMetric)
+        .filter(
+            models.EngagementMetric.lesson_id == lesson_id,
+            models.EngagementMetric.student_id == student_id,
+        )
+        .first()
+    )
+
+
+def derive_grade_score_from_assessment(db: Session, lesson_id: int, student_id: int):
+    assessment = get_assessment_result(db, lesson_id, student_id)
+    if not assessment:
+        return None
+
+    if assessment.final_score is not None:
+        return round(float(assessment.final_score), 4)
+
+    if assessment.score is not None and assessment.max_score:
+        return round(float(assessment.score) / float(assessment.max_score), 4)
+
+    return None
+
+
+def calculate_engagement_index(
+    metric_data: schemas.EngagementMetricCreate,
+    effective_grade_score: float | None,
+):
+    base_weights = {
+        "presence_ratio": 0.20,
+        "face_match_confidence": 0.15,
+        "head_pose_forward_ratio": 0.15,
+        "head_pose_variance_transformed": 0.10,
+        "motion_level": 0.10,
+        "frame_stability": 0.10,
+        "grade_score": 0.20,
+    }
+
+    transformed_values = {
+        "presence_ratio": metric_data.presence_ratio,
+        "face_match_confidence": metric_data.face_match_confidence,
+        "head_pose_forward_ratio": metric_data.head_pose_forward_ratio,
+        "head_pose_variance_transformed": round(1 - metric_data.head_pose_variance, 4),
+        "motion_level": metric_data.motion_level,
+        "frame_stability": metric_data.frame_stability,
+        "grade_score": effective_grade_score,
+    }
+
+    active_weights = {
+        key: weight
+        for key, weight in base_weights.items()
+        if transformed_values.get(key) is not None
+    }
+
+    total_weight = sum(active_weights.values())
+    normalized_weights = {
+        key: round(weight / total_weight, 4)
+        for key, weight in active_weights.items()
+    }
+
+    engagement_index = 0.0
+    for key, weight in normalized_weights.items():
+        engagement_index += float(transformed_values[key]) * weight
+
+    weights_json = {
+        "base_weights": base_weights,
+        "normalized_weights": normalized_weights,
+        "raw_values": {
+            "presence_ratio": metric_data.presence_ratio,
+            "face_match_confidence": metric_data.face_match_confidence,
+            "head_pose_forward_ratio": metric_data.head_pose_forward_ratio,
+            "head_pose_variance": metric_data.head_pose_variance,
+            "motion_level": metric_data.motion_level,
+            "frame_stability": metric_data.frame_stability,
+            "grade_score": effective_grade_score,
+        },
+        "transformed_values": transformed_values,
+        "notes": {
+            "head_pose_variance_rule": "engagement uses 1 - head_pose_variance",
+            "grade_score_source": "request_or_assessment_result",
+        },
+    }
+
+    return round(engagement_index, 4), weights_json
+
+
+def create_or_update_engagement_metric(
+    db: Session,
+    metric_data: schemas.EngagementMetricCreate,
+):
+    effective_grade_score = metric_data.grade_score
+    if effective_grade_score is None:
+        effective_grade_score = derive_grade_score_from_assessment(
+            db, metric_data.lesson_id, metric_data.student_id
+        )
+
+    engagement_index, weights_json = calculate_engagement_index(
+        metric_data,
+        effective_grade_score,
+    )
+
+    existing = get_engagement_metric(db, metric_data.lesson_id, metric_data.student_id)
+
+    if existing:
+        existing.presence_ratio = metric_data.presence_ratio
+        existing.face_match_confidence = metric_data.face_match_confidence
+        existing.head_pose_forward_ratio = metric_data.head_pose_forward_ratio
+        existing.head_pose_variance = metric_data.head_pose_variance
+        existing.motion_level = metric_data.motion_level
+        existing.frame_stability = metric_data.frame_stability
+        existing.grade_score = effective_grade_score
+        existing.engagement_index = engagement_index
+        existing.frame_count = metric_data.frame_count
+        existing.model_name = metric_data.model_name
+        existing.model_version = metric_data.model_version
+        existing.weights_json = weights_json
+
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    db_metric = models.EngagementMetric(
+        lesson_id=metric_data.lesson_id,
+        student_id=metric_data.student_id,
+        presence_ratio=metric_data.presence_ratio,
+        face_match_confidence=metric_data.face_match_confidence,
+        head_pose_forward_ratio=metric_data.head_pose_forward_ratio,
+        head_pose_variance=metric_data.head_pose_variance,
+        motion_level=metric_data.motion_level,
+        frame_stability=metric_data.frame_stability,
+        grade_score=effective_grade_score,
+        engagement_index=engagement_index,
+        frame_count=metric_data.frame_count,
+        model_name=metric_data.model_name,
+        model_version=metric_data.model_version,
+        weights_json=weights_json,
+    )
+    db.add(db_metric)
+    db.commit()
+    db.refresh(db_metric)
+    return db_metric
+
+
+def get_engagement_metrics_by_lesson(db: Session, lesson_id: int):
+    return (
+        db.query(models.EngagementMetric)
+        .filter(models.EngagementMetric.lesson_id == lesson_id)
+        .all()
+    )
+
+
+def get_engagement_metrics_by_student(db: Session, student_id: int):
+    return (
+        db.query(models.EngagementMetric)
+        .filter(models.EngagementMetric.student_id == student_id)
+        .all()
+    )
+
+
+def normalize_assessment_result(result: models.AssessmentResult):
+    if result.final_score is not None:
+        return round(float(result.final_score), 4)
+
+    if result.score is not None and result.max_score:
+        return round(float(result.score) / float(result.max_score), 4)
+
+    return None
+
+
+def determine_engagement_level(score: float | None):
+    if score is None:
+        return "insufficient_data"
+    if score >= 0.85:
+        return "high"
+    if score >= 0.70:
+        return "good"
+    if score >= 0.50:
+        return "medium"
+    return "low"
+
+
+def build_student_analytics_summary(db: Session, student_id: int):
+    student = get_user_by_id(db, student_id)
+    groups = get_groups_by_student(db, student_id)
+
+    attendance_records = get_attendance_by_student(db, student_id)
+    attendance_weights = {
+        models.AttendanceStatus.PRESENT: 1.0,
+        models.AttendanceStatus.LATE: 0.7,
+        models.AttendanceStatus.EXCUSED: 0.6,
+        models.AttendanceStatus.ABSENT: 0.0,
+    }
+
+    total_attendance_records = len(attendance_records)
+    attended_records = sum(
+        1 for record in attendance_records
+        if record.status in {
+            models.AttendanceStatus.PRESENT,
+            models.AttendanceStatus.LATE,
+            models.AttendanceStatus.EXCUSED,
+        }
+    )
+
+    attendance_rate_percent = None
+    attendance_score = None
+    if total_attendance_records > 0:
+        attendance_rate_percent = round(attended_records / total_attendance_records * 100, 2)
+        attendance_score = round(
+            sum(attendance_weights[record.status] for record in attendance_records) / total_attendance_records,
+            4,
+        )
+
+    assessment_results = get_results_by_student(db, student_id)
+    academic_scores = [
+        score for score in
+        (normalize_assessment_result(result) for result in assessment_results)
+        if score is not None
+    ]
+
+    average_academic_score = None
+    if academic_scores:
+        average_academic_score = round(sum(academic_scores) / len(academic_scores), 4)
+
+    engagement_metrics = get_engagement_metrics_by_student(db, student_id)
+    engagement_scores = [round(float(metric.engagement_index), 4) for metric in engagement_metrics]
+
+    average_engagement_index = None
+    if engagement_scores:
+        average_engagement_index = round(sum(engagement_scores) / len(engagement_scores), 4)
+
+    base_weights = {
+        "attendance_score": 0.30,
+        "average_academic_score": 0.30,
+        "average_engagement_index": 0.40,
+    }
+
+    available_components = {
+        "attendance_score": attendance_score,
+        "average_academic_score": average_academic_score,
+        "average_engagement_index": average_engagement_index,
+    }
+
+    active_weights = {
+        key: weight
+        for key, weight in base_weights.items()
+        if available_components[key] is not None
+    }
+
+    integral_engagement_score = None
+    normalized_weights = {}
+
+    if active_weights:
+        total_weight = sum(active_weights.values())
+        normalized_weights = {
+            key: round(weight / total_weight, 4)
+            for key, weight in active_weights.items()
+        }
+
+        integral_engagement_score = round(
+            sum(available_components[key] * normalized_weights[key] for key in normalized_weights),
+            4,
+        )
+
+    return schemas.StudentAnalyticsSummary(
+        student=student,
+        groups=groups,
+        total_attendance_records=total_attendance_records,
+        attended_records=attended_records,
+        attendance_rate_percent=attendance_rate_percent,
+        attendance_score=attendance_score,
+        total_assessment_results=len(assessment_results),
+        average_academic_score=average_academic_score,
+        total_engagement_metrics=len(engagement_metrics),
+        average_engagement_index=average_engagement_index,
+        integral_engagement_score=integral_engagement_score,
+        engagement_level=determine_engagement_level(integral_engagement_score),
+        component_weights={
+            "base_weights": base_weights,
+            "normalized_weights": normalized_weights,
+        },
+    )
+
+
+def build_group_analytics_summary(db: Session, group_id: int):
+    group = get_group_by_id(db, group_id)
+    students = get_students_by_group(db, group_id)
+
+    student_summaries = [
+        build_student_analytics_summary(db, student.id)
+        for student in students
+    ]
+
+    sorted_summaries = sorted(
+        student_summaries,
+        key=lambda item: item.integral_engagement_score if item.integral_engagement_score is not None else -1,
+        reverse=True,
+    )
+
+    student_items = []
+    for index, summary in enumerate(sorted_summaries, start=1):
+        student_items.append(
+            schemas.GroupStudentAnalyticsItem(
+                rank=index,
+                student=summary.student,
+                attendance_score=summary.attendance_score,
+                average_academic_score=summary.average_academic_score,
+                average_engagement_index=summary.average_engagement_index,
+                integral_engagement_score=summary.integral_engagement_score,
+                engagement_level=summary.engagement_level,
+            )
+        )
+
+    def avg_or_none(values):
+        filtered = [value for value in values if value is not None]
+        if not filtered:
+            return None
+        return round(sum(filtered) / len(filtered), 4)
+
+    average_attendance_score = avg_or_none(
+        [item.attendance_score for item in student_items]
+    )
+    average_academic_score = avg_or_none(
+        [item.average_academic_score for item in student_items]
+    )
+    average_engagement_index = avg_or_none(
+        [item.average_engagement_index for item in student_items]
+    )
+    average_integral_engagement_score = avg_or_none(
+        [item.integral_engagement_score for item in student_items]
+    )
+
+    top_student = student_items[0].student if student_items else None
+
+    return schemas.GroupAnalyticsSummary(
+        group=group,
+        total_students=len(students),
+        average_attendance_score=average_attendance_score,
+        average_academic_score=average_academic_score,
+        average_engagement_index=average_engagement_index,
+        average_integral_engagement_score=average_integral_engagement_score,
+        top_student=top_student,
+        students=student_items,
+    )
+
+
+def get_recommendation_by_id(db: Session, recommendation_id: int):
+    return (
+        db.query(models.Recommendation)
+        .filter(models.Recommendation.id == recommendation_id)
+        .first()
+    )
+
+
+def get_recommendations_by_student(db: Session, student_id: int):
+    return (
+        db.query(models.Recommendation)
+        .filter(models.Recommendation.student_id == student_id)
+        .order_by(models.Recommendation.created_at.desc())
+        .all()
+    )
+
+
+def get_existing_recommendation(
+    db: Session,
+    student_id: int,
+    recommendation_type: models.RecommendationType,
+    title: str,
+    text: str,
+):
+    return (
+        db.query(models.Recommendation)
+        .filter(
+            models.Recommendation.student_id == student_id,
+            models.Recommendation.recommendation_type == recommendation_type,
+            models.Recommendation.title == title,
+            models.Recommendation.text == text,
+        )
+        .first()
+    )
+
+
+def create_or_get_recommendation(
+    db: Session,
+    student_id: int,
+    recommendation_type: models.RecommendationType,
+    title: str,
+    text: str,
+    confidence_score: float | None = None,
+    lesson_id: int | None = None,
+):
+    existing = get_existing_recommendation(
+        db=db,
+        student_id=student_id,
+        recommendation_type=recommendation_type,
+        title=title,
+        text=text,
+    )
+    if existing:
+        return existing
+
+    recommendation = models.Recommendation(
+        student_id=student_id,
+        lesson_id=lesson_id,
+        recommendation_type=recommendation_type,
+        title=title,
+        text=text,
+        confidence_score=confidence_score,
+        is_read=False,
+    )
+    db.add(recommendation)
+    db.commit()
+    db.refresh(recommendation)
+    return recommendation
+
+
+def mark_recommendation_as_read(db: Session, recommendation_id: int):
+    recommendation = get_recommendation_by_id(db, recommendation_id)
+    if not recommendation:
+        return None
+
+    recommendation.is_read = True
+    db.commit()
+    db.refresh(recommendation)
+    return recommendation
+
+
+def generate_recommendation_payloads(summary: schemas.StudentAnalyticsSummary):
+    payloads = []
+
+    score = summary.integral_engagement_score
+    level = summary.engagement_level
+    academic = summary.average_academic_score
+    attendance = summary.attendance_score
+    engagement = summary.average_engagement_index
+
+    if level == "low":
+        payloads.append(
+            (
+                models.RecommendationType.RISK,
+                "Низкий уровень вовлечённости",
+                "Зафиксирован низкий интегральный уровень вовлечённости. Требуется индивидуальное сопровождение и дополнительный контроль прогресса.",
+                0.95,
+            )
+        )
+        payloads.append(
+            (
+                models.RecommendationType.MOTIVATION,
+                "Повысить учебную мотивацию",
+                "Рекомендуется провести мотивационную беседу, уточнить трудности студента и согласовать краткосрочные учебные цели.",
+                0.88,
+            )
+        )
+
+        if attendance is not None and attendance < 0.5:
+            payloads.append(
+                (
+                    models.RecommendationType.ACTIVITY,
+                    "Улучшить посещаемость",
+                    "Низкая посещаемость снижает общий индекс вовлечённости. Желательно усилить контроль посещения занятий и раннее выявление пропусков.",
+                    0.9,
+                )
+            )
+
+        if academic is not None and academic < 0.6:
+            payloads.append(
+                (
+                    models.RecommendationType.ACADEMIC,
+                    "Усилить академическую поддержку",
+                    "Рекомендуется предоставить дополнительные материалы, консультации и короткие проверочные задания для устранения пробелов.",
+                    0.9,
+                )
+            )
+
+    elif level == "medium":
+        payloads.append(
+            (
+                models.RecommendationType.ACTIVITY,
+                "Поддержать учебную активность",
+                "Уровень вовлечённости средний. Полезно увеличить участие в практических заданиях и регулярную обратную связь по результатам.",
+                0.8,
+            )
+        )
+        payloads.append(
+            (
+                models.RecommendationType.MOTIVATION,
+                "Стабилизировать вовлечённость",
+                "Рекомендуется закрепить положительную динамику через понятные цели, небольшие этапы контроля и регулярное поощрение прогресса.",
+                0.76,
+            )
+        )
+
+        if academic is not None and academic < 0.7:
+            payloads.append(
+                (
+                    models.RecommendationType.ACADEMIC,
+                    "Улучшить академический результат",
+                    "Средний уровень вовлечённости сочетается с недостаточно высоким учебным результатом. Желательна точечная работа по сложным темам.",
+                    0.78,
+                )
+            )
+
+    elif level == "good":
+        payloads.append(
+            (
+                models.RecommendationType.ACADEMIC,
+                "Поддерживать текущий темп",
+                "У студента хороший уровень вовлечённости. Рекомендуется сохранять текущий темп работы и постепенно усложнять практические задачи.",
+                0.72,
+            )
+        )
+        payloads.append(
+            (
+                models.RecommendationType.ACTIVITY,
+                "Развивать активное участие",
+                "Полезно чаще вовлекать студента в обсуждения, командные задания и презентацию решений.",
+                0.7,
+            )
+        )
+
+    elif level == "high":
+        payloads.append(
+            (
+                models.RecommendationType.ACADEMIC,
+                "Предложить задания повышенной сложности",
+                "У студента высокий уровень вовлечённости. Можно рекомендовать усложнённые задания, проектную деятельность и элементы наставничества.",
+                0.75,
+            )
+        )
+        payloads.append(
+            (
+                models.RecommendationType.MOTIVATION,
+                "Поддерживать высокий уровень",
+                "Рекомендуется закреплять достигнутый уровень через персонализированные цели и расширенные возможности для развития.",
+                0.7,
+            )
+        )
+
+    else:
+        payloads.append(
+            (
+                models.RecommendationType.MOTIVATION,
+                "Недостаточно данных для рекомендаций",
+                "Для формирования более точных рекомендаций нужно накопить данные по посещаемости, оценкам и метрикам вовлечённости.",
+                0.55,
+            )
+        )
+
+    return payloads
+
+
+def generate_recommendations_for_student(db: Session, student_id: int):
+    summary = build_student_analytics_summary(db, student_id)
+    payloads = generate_recommendation_payloads(summary)
+
+    recommendations = []
+    for recommendation_type, title, text, confidence_score in payloads:
+        recommendation = create_or_get_recommendation(
+            db=db,
+            student_id=student_id,
+            recommendation_type=recommendation_type,
+            title=title,
+            text=text,
+            confidence_score=confidence_score,
+            lesson_id=None,
+        )
+        recommendations.append(recommendation)
+
+    return schemas.StudentRecommendationsGenerationResponse(
+        student_id=student_id,
+        integral_engagement_score=summary.integral_engagement_score,
+        engagement_level=summary.engagement_level,
+        generated_count=len(recommendations),
+        recommendations=recommendations,
+    )
+
+
+def generate_recommendations_for_group(db: Session, group_id: int):
+    students = get_students_by_group(db, group_id)
+
+    total_generated = 0
+    for student in students:
+        response = generate_recommendations_for_student(db, student.id)
+        total_generated += response.generated_count
+
+    return schemas.GroupRecommendationsGenerationResponse(
+        group_id=group_id,
+        total_students=len(students),
+        total_generated_recommendations=total_generated,
     )

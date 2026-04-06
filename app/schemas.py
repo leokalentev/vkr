@@ -58,15 +58,15 @@ class StudentProfileRead(StudentProfileBase):
 
 class GroupBase(BaseModel):
     name: str
-    curator_id: Optional[int] = None
 
 
 class GroupCreate(GroupBase):
-    pass
+    curator_id: Optional[int] = None
 
 
 class GroupRead(GroupBase):
     id: int
+    curator_id: Optional[int] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

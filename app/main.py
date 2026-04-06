@@ -1,4 +1,5 @@
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from app.database import Base, engine, get_db
@@ -20,8 +21,18 @@ app = FastAPI(
     version="1.0.0",
 )
 
-app.include_router(auth_router)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+app.include_router(auth_router)
 
 @app.get("/")
 def root():
@@ -66,7 +77,24 @@ def create_group(
         require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
     ),
 ):
-    return crud.create_group(db, group)
+    curator_id = group.curator_id
+
+    if current_user.role == models.UserRole.TEACHER:
+        curator_id = current_user.id
+
+    if current_user.role == models.UserRole.ADMIN and curator_id is not None:
+        curator = crud.get_user_by_id(db, curator_id)
+        if not curator:
+            raise HTTPException(status_code=404, detail="Curator not found")
+        if curator.role != models.UserRole.TEACHER:
+            raise HTTPException(status_code=400, detail="Curator must be a teacher")
+
+    group_to_create = schemas.GroupCreate(
+        name=group.name,
+        curator_id=curator_id
+    )
+
+    return crud.create_group(db, group_to_create)
 
 
 @app.get("/groups/", response_model=list[schemas.GroupRead])

@@ -34,6 +34,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 
+
 @app.get("/")
 def root():
     return {"message": "API is running"}
@@ -91,7 +92,7 @@ def create_group(
 
     group_to_create = schemas.GroupCreate(
         name=group.name,
-        curator_id=curator_id
+        curator_id=curator_id,
     )
 
     return crud.create_group(db, group_to_create)

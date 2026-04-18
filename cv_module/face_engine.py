@@ -6,10 +6,11 @@ import cv2
 import numpy as np
 from insightface.app import FaceAnalysis
 
-from config import (
+from cv_module.config import (
     INSIGHTFACE_MODEL_NAME,
     INSIGHTFACE_PROVIDERS,
     FACE_DET_THRESHOLD,
+    INSIGHTFACE_DET_SIZE,
 )
 
 
@@ -22,12 +23,18 @@ class DetectedFace:
 
 
 class FaceEngine:
+    _app_instance = None
+
     def __init__(self):
-        self.app = FaceAnalysis(
-            name=INSIGHTFACE_MODEL_NAME,
-            providers=INSIGHTFACE_PROVIDERS,
-        )
-        self.app.prepare(ctx_id=0, det_size=(640, 640))
+        if FaceEngine._app_instance is None:
+            app = FaceAnalysis(
+                name=INSIGHTFACE_MODEL_NAME,
+                providers=INSIGHTFACE_PROVIDERS,
+            )
+            app.prepare(ctx_id=0, det_size=INSIGHTFACE_DET_SIZE)
+            FaceEngine._app_instance = app
+
+        self.app = FaceEngine._app_instance
 
     def detect_faces(self, frame_bgr) -> list[DetectedFace]:
         faces = self.app.get(frame_bgr)
@@ -67,6 +74,11 @@ class FaceEngine:
 
         if image is None:
             raise ValueError(f"Не удалось прочитать шаблон: {image_path}")
+
+        h, w = image.shape[:2]
+        if w > 1000:
+            scale = 1000 / w
+            image = cv2.resize(image, (int(w * scale), int(h * scale)))
 
         face = self.get_primary_face(image)
         if face is None:

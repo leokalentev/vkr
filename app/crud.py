@@ -95,6 +95,34 @@ def get_lesson_by_id(db: Session, lesson_id: int):
     return db.query(models.Lesson).filter(models.Lesson.id == lesson_id).first()
 
 
+def get_lessons_by_group(db: Session, group_id: int):
+    return (
+        db.query(models.Lesson)
+        .filter(models.Lesson.group_id == group_id)
+        .order_by(models.Lesson.lesson_date.desc(), models.Lesson.starts_at.desc())
+        .all()
+    )
+
+
+def get_lessons_by_student(db: Session, student_id: int):
+    group_ids = [
+        membership.group_id
+        for membership in db.query(models.GroupMembership)
+        .filter(models.GroupMembership.student_id == student_id)
+        .all()
+    ]
+
+    if not group_ids:
+        return []
+
+    return (
+        db.query(models.Lesson)
+        .filter(models.Lesson.group_id.in_(group_ids))
+        .order_by(models.Lesson.lesson_date.desc(), models.Lesson.starts_at.desc())
+        .all()
+    )
+
+
 def get_group_membership(db: Session, group_id: int, student_id: int):
     return (
         db.query(models.GroupMembership)
@@ -318,6 +346,27 @@ def get_engagement_metric(db: Session, lesson_id: int, student_id: int):
             models.EngagementMetric.lesson_id == lesson_id,
             models.EngagementMetric.student_id == student_id,
         )
+        .first()
+    )
+
+
+def get_latest_engagement_metric(db: Session, student_id: int):
+    return (
+        db.query(models.EngagementMetric)
+        .filter(models.EngagementMetric.student_id == student_id)
+        .order_by(models.EngagementMetric.computed_at.desc())
+        .first()
+    )
+
+
+def get_active_face_template(db: Session, student_id: int):
+    return (
+        db.query(models.FaceTemplate)
+        .filter(
+            models.FaceTemplate.student_id == student_id,
+            models.FaceTemplate.is_active.is_(True),
+        )
+        .order_by(models.FaceTemplate.created_at.desc())
         .first()
     )
 
@@ -738,30 +787,39 @@ def mark_recommendation_as_read(db: Session, recommendation_id: int):
     return recommendation
 
 
-def generate_recommendation_payloads(summary: schemas.StudentAnalyticsSummary):
+def generate_recommendation_payloads(
+    summary: schemas.StudentAnalyticsSummary,
+    latest_metric: models.EngagementMetric | None = None,
+):
     payloads = []
 
-    score = summary.integral_engagement_score
     level = summary.engagement_level
     academic = summary.average_academic_score
     attendance = summary.attendance_score
     engagement = summary.average_engagement_index
+    integral = summary.integral_engagement_score
+
+    presence_ratio = float(latest_metric.presence_ratio) if latest_metric and latest_metric.presence_ratio is not None else None
+    face_match_confidence = (
+        float(latest_metric.face_match_confidence)
+        if latest_metric and latest_metric.face_match_confidence is not None
+        else None
+    )
+    head_pose_forward_ratio = (
+        float(latest_metric.head_pose_forward_ratio)
+        if latest_metric and latest_metric.head_pose_forward_ratio is not None
+        else None
+    )
+    motion_level = float(latest_metric.motion_level) if latest_metric and latest_metric.motion_level is not None else None
+    frame_stability = float(latest_metric.frame_stability) if latest_metric and latest_metric.frame_stability is not None else None
 
     if level == "low":
         payloads.append(
             (
                 models.RecommendationType.RISK,
-                "Низкий уровень вовлечённости",
-                "Зафиксирован низкий интегральный уровень вовлечённости. Требуется индивидуальное сопровождение и дополнительный контроль прогресса.",
+                "Требуется усиленный контроль вовлечённости",
+                "Система зафиксировала низкий общий уровень вовлечённости. Рекомендуется провести индивидуальную беседу, выяснить причины снижения активности и организовать более частый контроль прогресса.",
                 0.95,
-            )
-        )
-        payloads.append(
-            (
-                models.RecommendationType.MOTIVATION,
-                "Повысить учебную мотивацию",
-                "Рекомендуется провести мотивационную беседу, уточнить трудности студента и согласовать краткосрочные учебные цели.",
-                0.88,
             )
         )
 
@@ -769,9 +827,9 @@ def generate_recommendation_payloads(summary: schemas.StudentAnalyticsSummary):
             payloads.append(
                 (
                     models.RecommendationType.ACTIVITY,
-                    "Улучшить посещаемость",
-                    "Низкая посещаемость снижает общий индекс вовлечённости. Желательно усилить контроль посещения занятий и раннее выявление пропусков.",
-                    0.9,
+                    "Нужно повысить дисциплину посещения",
+                    "Низкий показатель посещаемости снижает общий результат. Желательно усилить контроль присутствия на контрольных мероприятиях и оперативно реагировать на пропуски.",
+                    0.92,
                 )
             )
 
@@ -779,9 +837,19 @@ def generate_recommendation_payloads(summary: schemas.StudentAnalyticsSummary):
             payloads.append(
                 (
                     models.RecommendationType.ACADEMIC,
-                    "Усилить академическую поддержку",
-                    "Рекомендуется предоставить дополнительные материалы, консультации и короткие проверочные задания для устранения пробелов.",
-                    0.9,
+                    "Требуется адресная учебная поддержка",
+                    "Учебный результат ниже ожидаемого. Рекомендуется организовать дополнительные консультации, разобрать проблемные темы и дать короткие задания для закрепления материала.",
+                    0.90,
+                )
+            )
+
+        if head_pose_forward_ratio is not None and head_pose_forward_ratio < 0.5:
+            payloads.append(
+                (
+                    models.RecommendationType.MOTIVATION,
+                    "Стоит усилить включённость в работу на мероприятии",
+                    "Последний анализ показал слабую устойчивость внимания во время мероприятия. Полезно чаще вовлекать студента в устные ответы, короткие вопросы и практические действия по ходу работы.",
+                    0.84,
                 )
             )
 
@@ -789,17 +857,9 @@ def generate_recommendation_payloads(summary: schemas.StudentAnalyticsSummary):
         payloads.append(
             (
                 models.RecommendationType.ACTIVITY,
-                "Поддержать учебную активность",
-                "Уровень вовлечённости средний. Полезно увеличить участие в практических заданиях и регулярную обратную связь по результатам.",
-                0.8,
-            )
-        )
-        payloads.append(
-            (
-                models.RecommendationType.MOTIVATION,
-                "Стабилизировать вовлечённость",
-                "Рекомендуется закрепить положительную динамику через понятные цели, небольшие этапы контроля и регулярное поощрение прогресса.",
-                0.76,
+                "Нужно закрепить рабочую вовлечённость",
+                "Уровень вовлечённости остаётся средним. Желательно чаще включать студента в активные формы участия и давать более регулярную обратную связь по результатам.",
+                0.82,
             )
         )
 
@@ -807,9 +867,29 @@ def generate_recommendation_payloads(summary: schemas.StudentAnalyticsSummary):
             payloads.append(
                 (
                     models.RecommendationType.ACADEMIC,
-                    "Улучшить академический результат",
-                    "Средний уровень вовлечённости сочетается с недостаточно высоким учебным результатом. Желательна точечная работа по сложным темам.",
-                    0.78,
+                    "Желательна точечная работа по сложным темам",
+                    "При среднем уровне вовлечённости учебный результат остаётся недостаточно высоким. Рекомендуется определить проблемные темы и усилить их отработку.",
+                    0.80,
+                )
+            )
+
+        if head_pose_forward_ratio is not None and head_pose_forward_ratio < 0.65:
+            payloads.append(
+                (
+                    models.RecommendationType.MOTIVATION,
+                    "Нужно поддерживать устойчивое внимание",
+                    "Во время последнего анализа внимание студента было нестабильным. Полезно использовать более частые контрольные вопросы и короткие этапы проверки понимания.",
+                    0.76,
+                )
+            )
+
+        if frame_stability is not None and frame_stability < 0.6:
+            payloads.append(
+                (
+                    models.RecommendationType.ACTIVITY,
+                    "Следует повысить устойчивость поведения на мероприятии",
+                    "Последний анализ показал нестабильное поведение в кадре. Рекомендуется усилить организационную дисциплину и поддерживать более чёткий формат работы на контрольном мероприятии.",
+                    0.74,
                 )
             )
 
@@ -817,45 +897,108 @@ def generate_recommendation_payloads(summary: schemas.StudentAnalyticsSummary):
         payloads.append(
             (
                 models.RecommendationType.ACADEMIC,
-                "Поддерживать текущий темп",
-                "У студента хороший уровень вовлечённости. Рекомендуется сохранять текущий темп работы и постепенно усложнять практические задачи.",
-                0.72,
+                "Стоит поддерживать текущий уровень работы",
+                "Студент демонстрирует хороший общий уровень вовлечённости. Рекомендуется сохранять текущий формат сопровождения и постепенно усложнять учебные задачи.",
+                0.75,
             )
         )
-        payloads.append(
-            (
-                models.RecommendationType.ACTIVITY,
-                "Развивать активное участие",
-                "Полезно чаще вовлекать студента в обсуждения, командные задания и презентацию решений.",
-                0.7,
+
+        if academic is not None and academic >= 0.85:
+            payloads.append(
+                (
+                    models.RecommendationType.ACADEMIC,
+                    "Можно расширять сложность заданий",
+                    "Учебный результат устойчиво высокий. Есть основания постепенно увеличивать сложность практических и контрольных заданий.",
+                    0.73,
+                )
             )
-        )
+
+        if head_pose_forward_ratio is not None and head_pose_forward_ratio < 0.7:
+            payloads.append(
+                (
+                    models.RecommendationType.ACTIVITY,
+                    "Полезно поддерживать концентрацию на протяжении мероприятия",
+                    "Несмотря на хороший общий результат, признаки устойчивого внимания в последнем анализе были не максимальными. Желательно чаще удерживать студента в активной фазе работы.",
+                    0.71,
+                )
+            )
 
     elif level == "high":
         payloads.append(
             (
                 models.RecommendationType.ACADEMIC,
-                "Предложить задания повышенной сложности",
-                "У студента высокий уровень вовлечённости. Можно рекомендовать усложнённые задания, проектную деятельность и элементы наставничества.",
-                0.75,
+                "Можно предлагать задания повышенной сложности",
+                "Студент демонстрирует высокий уровень вовлечённости и устойчивое участие в образовательном процессе. Рекомендуется использовать более сложные задания, элементы проектной работы и расширенные учебные цели.",
+                0.78,
             )
         )
+
         payloads.append(
             (
                 models.RecommendationType.MOTIVATION,
-                "Поддерживать высокий уровень",
-                "Рекомендуется закреплять достигнутый уровень через персонализированные цели и расширенные возможности для развития.",
-                0.7,
+                "Следует поддерживать достигнутый высокий уровень",
+                "Текущие показатели свидетельствуют о хорошей включённости студента в процесс. Полезно закреплять результат через персонализированные цели и регулярное позитивное подкрепление.",
+                0.74,
             )
         )
+
+        if academic is not None and academic < 0.75:
+            payloads.append(
+                (
+                    models.RecommendationType.ACADEMIC,
+                    "Высокую вовлечённость стоит подкрепить ростом учебного результата",
+                    "Студент активно включён в процесс, однако академический результат пока ниже ожидаемого. Рекомендуется направить активность в более содержательную учебную работу по трудным темам.",
+                    0.79,
+                )
+            )
+
+        if head_pose_forward_ratio is not None and head_pose_forward_ratio >= 0.75:
+            payloads.append(
+                (
+                    models.RecommendationType.ACTIVITY,
+                    "Во время мероприятия зафиксирована устойчивая концентрация",
+                    "Последний видеоанализ показал хорошую устойчивость внимания и уверенное присутствие студента. Такой формат участия можно считать положительным ориентиром.",
+                    0.72,
+                )
+            )
 
     else:
         payloads.append(
             (
                 models.RecommendationType.MOTIVATION,
-                "Недостаточно данных для рекомендаций",
-                "Для формирования более точных рекомендаций нужно накопить данные по посещаемости, оценкам и метрикам вовлечённости.",
+                "Недостаточно данных для развёрнутых рекомендаций",
+                "Для более точного вывода системе требуется больше данных по посещаемости, учебным результатам и видеоанализу контрольных мероприятий.",
                 0.55,
+            )
+        )
+
+    if presence_ratio is not None and presence_ratio < 0.75:
+        payloads.append(
+            (
+                models.RecommendationType.ACTIVITY,
+                "Присутствие на последнем мероприятии было зафиксировано нестабильно",
+                "Видеоанализ показал, что студент присутствовал в кадре не на всём протяжении мероприятия. Рекомендуется дополнительно контролировать условия проведения и факт участия.",
+                0.77,
+            )
+        )
+
+    if face_match_confidence is not None and face_match_confidence < 0.65:
+        payloads.append(
+            (
+                models.RecommendationType.RISK,
+                "Есть смысл дополнительно подтвердить личность участника",
+                "Уверенность автоматического распознавания личности оказалась ниже желаемой. Желательно использовать более качественный видеоматериал или повторную проверку шаблона лица.",
+                0.70,
+            )
+        )
+
+    if motion_level is not None and motion_level > 0.35:
+        payloads.append(
+            (
+                models.RecommendationType.ACTIVITY,
+                "Во время последнего анализа зафиксирована повышенная двигательная активность",
+                "Система выявила заметную подвижность в кадре. Это может снижать устойчивость внимания, поэтому полезно поддерживать более организованный формат участия в мероприятии.",
+                0.68,
             )
         )
 
@@ -864,7 +1007,8 @@ def generate_recommendation_payloads(summary: schemas.StudentAnalyticsSummary):
 
 def generate_recommendations_for_student(db: Session, student_id: int):
     summary = build_student_analytics_summary(db, student_id)
-    payloads = generate_recommendation_payloads(summary)
+    latest_metric = get_latest_engagement_metric(db, student_id)
+    payloads = generate_recommendation_payloads(summary, latest_metric)
 
     recommendations = []
     for recommendation_type, title, text, confidence_score in payloads:
@@ -875,7 +1019,7 @@ def generate_recommendations_for_student(db: Session, student_id: int):
             title=title,
             text=text,
             confidence_score=confidence_score,
-            lesson_id=None,
+            lesson_id=latest_metric.lesson_id if latest_metric else None,
         )
         recommendations.append(recommendation)
 

@@ -336,3 +336,35 @@ class GroupRecommendationsGenerationResponse(BaseModel):
     group_id: int
     total_students: int
     total_generated_recommendations: int
+
+# =========================
+# CV / VIDEO ANALYSIS
+# =========================
+
+class VideoAnalysisMeta(BaseModel):
+    processed_frames: int
+    detected_faces: int
+    matched_faces: int
+    pose_detected_frames: int
+    video_path: str
+    template_path: str
+
+
+class VideoAnalysisResponse(BaseModel):
+    attendance: AttendanceRead
+    engagement_metric: EngagementMetricRead
+    meta: VideoAnalysisMeta
+
+
+class LessonShortRead(BaseModel):
+    id: int
+    group_id: int
+    teacher_id: int
+    title: str
+    lesson_date: date
+    starts_at: datetime
+    ends_at: datetime
+    location: Optional[str] = None
+    description: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)

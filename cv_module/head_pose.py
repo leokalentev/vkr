@@ -38,10 +38,8 @@ class HeadPoseAnalyzer:
 
         face_width = max(abs(right_eye[0] - left_eye[0]), 1.0)
 
-        # Насколько нос отклонён от центра лица
         nose_offset = abs(nose[0] - face_center_x) / face_width
 
-        # 1.0 = идеально фронтально, 0.0 = сильный поворот
         forward_score = 1.0 - min(nose_offset / self.forward_threshold, 1.0)
         forward_score = float(max(0.0, min(1.0, forward_score)))
 

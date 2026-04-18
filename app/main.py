@@ -1,4 +1,7 @@
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, File
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
@@ -11,6 +14,8 @@ from app.auth import (
 )
 from app.security import hash_password
 from app.import_utils import read_students_excel
+from cv_module.service import analyze_video_file
+from cv_module.config import TEMPLATES_DIR
 
 
 Base.metadata.create_all(bind=engine)
@@ -33,6 +38,9 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
 
 
 @app.get("/")
@@ -264,6 +272,122 @@ def read_lessons(
     current_user: models.User = Depends(get_current_active_user),
 ):
     return crud.get_lessons(db)
+
+
+@app.get("/students/{student_id}/lessons", response_model=list[schemas.LessonShortRead])
+def get_student_lessons(
+    student_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+):
+    student = crud.get_user_by_id(db, student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    if student.role != models.UserRole.STUDENT:
+        raise HTTPException(status_code=400, detail="Specified user is not a student")
+
+    return crud.get_lessons_by_student(db, student_id)
+
+
+# =========================
+# CV / VIDEO ANALYSIS
+# =========================
+
+@app.post("/cv/analyze-video", response_model=schemas.VideoAnalysisResponse)
+def analyze_video(
+    lesson_id: int = Form(...),
+    student_id: int = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
+    ),
+):
+    lesson = crud.get_lesson_by_id(db, lesson_id)
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+
+    student = crud.get_user_by_id(db, student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    if student.role != models.UserRole.STUDENT:
+        raise HTTPException(status_code=400, detail="Specified user is not a student")
+
+    membership = crud.get_group_membership(db, lesson.group_id, student_id)
+    if not membership:
+        raise HTTPException(
+            status_code=400,
+            detail="Student is not assigned to the lesson group"
+        )
+
+    if current_user.role == models.UserRole.TEACHER and lesson.teacher_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Teacher can analyze video only for their own lessons"
+        )
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="File name is missing")
+
+    if not file.content_type or not file.content_type.startswith("video/"):
+        raise HTTPException(status_code=400, detail="Only video files are supported")
+
+    active_face_template = crud.get_active_face_template(db, student_id)
+
+    template_path = None
+    if active_face_template and active_face_template.image_path:
+        db_template_path = Path(active_face_template.image_path)
+        if db_template_path.exists():
+            template_path = db_template_path
+
+    if template_path is None:
+        fallback_template = TEMPLATES_DIR / f"student_{student_id}.jpg"
+        if fallback_template.exists():
+            template_path = fallback_template
+
+    if template_path is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Face template not found for this student"
+        )
+
+    extension = Path(file.filename).suffix or ".mp4"
+    safe_filename = f"student_{student_id}_lesson_{lesson_id}_{uuid4().hex}{extension}"
+    video_path = UPLOAD_DIR / safe_filename
+
+    try:
+        with video_path.open("wb") as buffer:
+            buffer.write(file.file.read())
+
+        analysis_result = analyze_video_file(
+            video_path=video_path,
+            template_path=template_path,
+            lesson_id=lesson_id,
+            student_id=student_id,
+        )
+
+        attendance = crud.create_or_update_attendance(
+            db,
+            schemas.AttendanceCreate(**analysis_result["attendance_payload"])
+        )
+
+        engagement_metric = crud.create_or_update_engagement_metric(
+            db,
+            schemas.EngagementMetricCreate(**analysis_result["engagement_payload"])
+        )
+
+        return schemas.VideoAnalysisResponse(
+            attendance=attendance,
+            engagement_metric=engagement_metric,
+            meta=analysis_result["meta"],
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Video analysis failed: {str(e)}")
 
 
 # =========================

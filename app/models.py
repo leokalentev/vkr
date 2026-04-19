@@ -116,6 +116,9 @@ class User(Base):
     recommendations: Mapped[list["Recommendation"]] = relationship(
         back_populates="student", cascade="all, delete-orphan"
     )
+    academic_snapshots: Mapped[list["StudentAcademicSnapshot"]] = relationship(
+        back_populates="student", cascade="all, delete-orphan"
+    )
 
 
 # =========================================
@@ -167,7 +170,62 @@ class Group(Base):
         back_populates="group", cascade="all, delete-orphan"
     )
 
+    academic_snapshots: Mapped[list["StudentAcademicSnapshot"]] = relationship(
+        back_populates="group", cascade="all, delete-orphan"
+    )
 
+# =========================================
+# STUDENT ACADEMIC SNAPSHOTS
+# =========================================
+
+class StudentAcademicSnapshot(Base):
+    __tablename__ = "student_academic_snapshots"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    student_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    group_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("groups.id", ondelete="CASCADE"), nullable=False
+    )
+
+    subject_name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    total_classes: Mapped[int] = mapped_column(Integer, nullable=False)
+    attended_classes: Mapped[int] = mapped_column(Integer, nullable=False)
+    excused_missed_classes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    average_score: Mapped[float] = mapped_column(Numeric(6, 2), nullable=False)
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "student_id",
+            "group_id",
+            "subject_name",
+            name="uq_snapshot_student_group_subject",
+        ),
+        CheckConstraint("total_classes > 0", name="chk_snapshot_total_classes_positive"),
+        CheckConstraint("attended_classes >= 0", name="chk_snapshot_attended_classes_nonnegative"),
+        CheckConstraint(
+            "excused_missed_classes >= 0",
+            name="chk_snapshot_excused_classes_nonnegative",
+        ),
+        CheckConstraint(
+            "attended_classes + excused_missed_classes <= total_classes",
+            name="chk_snapshot_attendance_sum_lte_total",
+        ),
+        CheckConstraint(
+            "average_score >= 0 AND average_score <= 50",
+            name="chk_snapshot_average_score_0_50",
+        ),
+    )
+
+    student: Mapped["User"] = relationship(back_populates="academic_snapshots")
+    group: Mapped["Group"] = relationship(back_populates="academic_snapshots")
 # =========================================
 # GROUP MEMBERSHIPS
 # =========================================

@@ -368,3 +368,46 @@ class LessonShortRead(BaseModel):
     description: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+# =========================
+# STUDENT ACADEMIC SNAPSHOTS
+# =========================
+
+class StudentAcademicSnapshotBase(BaseModel):
+    student_id: int
+    group_id: int
+    subject_name: str
+    total_classes: int = Field(gt=0)
+    attended_classes: int = Field(ge=0)
+    excused_missed_classes: int = Field(ge=0)
+    average_score: float = Field(ge=0, le=50)
+
+
+class StudentAcademicSnapshotCreate(StudentAcademicSnapshotBase):
+    pass
+
+
+class StudentAcademicSnapshotRead(StudentAcademicSnapshotBase):
+    id: int
+    imported_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AcademicSnapshotImportItem(BaseModel):
+    student_id: int
+    email: EmailStr
+    full_name: str
+    group_name: str
+    subject_name: str
+    total_classes: int
+    attended_classes: int
+    excused_missed_classes: int
+    average_score: float
+
+
+class AcademicSnapshotImportResponse(BaseModel):
+    imported_count: int
+    created_students_count: int
+    created_groups_count: int
+    processed_items: list[AcademicSnapshotImportItem]

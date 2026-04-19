@@ -389,14 +389,16 @@ def calculate_engagement_index(
     metric_data: schemas.EngagementMetricCreate,
     effective_grade_score: float | None,
 ):
+    motion_activity_score = transform_motion_for_engagement(metric_data.motion_level)
+
     base_weights = {
-        "presence_ratio": 0.20,
-        "face_match_confidence": 0.15,
-        "head_pose_forward_ratio": 0.15,
+        "presence_ratio": 0.10,
+        "face_match_confidence": 0.20,
+        "head_pose_forward_ratio": 0.20,
         "head_pose_variance_transformed": 0.10,
-        "motion_level": 0.10,
+        "motion_activity_score": 0.20,
         "frame_stability": 0.10,
-        "grade_score": 0.20,
+        "grade_score": 0.10,
     }
 
     transformed_values = {
@@ -404,7 +406,7 @@ def calculate_engagement_index(
         "face_match_confidence": metric_data.face_match_confidence,
         "head_pose_forward_ratio": metric_data.head_pose_forward_ratio,
         "head_pose_variance_transformed": round(1 - metric_data.head_pose_variance, 4),
-        "motion_level": metric_data.motion_level,
+        "motion_activity_score": motion_activity_score,
         "frame_stability": metric_data.frame_stability,
         "grade_score": effective_grade_score,
     }
@@ -425,6 +427,52 @@ def calculate_engagement_index(
     for key, weight in normalized_weights.items():
         engagement_index += float(transformed_values[key]) * weight
 
+    # =========================
+    # ШТРАФЫ И КОРРЕКЦИИ
+    # =========================
+
+    penalties = []
+
+    face_conf = metric_data.face_match_confidence
+    presence_ratio = metric_data.presence_ratio
+    head_forward = metric_data.head_pose_forward_ratio
+    motion_level = metric_data.motion_level
+    frame_stability = metric_data.frame_stability
+
+    # 1. Если лицо плохо распознано — сильно режем итог
+    if face_conf is not None:
+        if face_conf < 0.60:
+            engagement_index *= 0.80
+            penalties.append("low_face_match_confidence_penalty_0_80")
+
+        if face_conf < 0.45:
+            engagement_index *= 0.75
+            penalties.append("very_low_face_match_confidence_penalty_0_75")
+
+        if face_conf < 0.35:
+            engagement_index *= 0.70
+            penalties.append("critical_face_match_confidence_penalty_0_70")
+
+    # 2. Если присутствие в кадре есть, но личность не подтверждается,
+    # нельзя давать высокий индекс вовлечённости
+    if presence_ratio >= 0.85 and (face_conf is None or face_conf < 0.50):
+        engagement_index = min(engagement_index, 0.55)
+        penalties.append("presence_without_identity_cap_0_55")
+
+    # 3. Если активность почти нулевая и лицо распознаётся плохо,
+    # это подозрительная ситуация: закрытое лицо, статичность, слабое подтверждение личности
+    if motion_level < 0.02 and frame_stability > 0.95 and (face_conf is None or face_conf < 0.50):
+        engagement_index = min(engagement_index, 0.50)
+        penalties.append("static_low_identity_cap_0_50")
+
+    # 4. Если лицо плохо распознано, но head pose идеальный,
+    # не даём системе переоценивать такую ситуацию
+    if head_forward > 0.90 and (face_conf is None or face_conf < 0.50):
+        engagement_index = min(engagement_index, 0.60)
+        penalties.append("head_pose_without_identity_cap_0_60")
+
+    engagement_index = round(max(0.0, min(1.0, engagement_index)), 4)
+
     weights_json = {
         "base_weights": base_weights,
         "normalized_weights": normalized_weights,
@@ -438,13 +486,41 @@ def calculate_engagement_index(
             "grade_score": effective_grade_score,
         },
         "transformed_values": transformed_values,
+        "derived_values": {
+            "motion_activity_score": motion_activity_score,
+        },
         "notes": {
             "head_pose_variance_rule": "engagement uses 1 - head_pose_variance",
+            "motion_activity_rule": "moderate motion is better than too low or too high",
             "grade_score_source": "request_or_assessment_result",
         },
+        "penalties_applied": penalties,
     }
 
-    return round(engagement_index, 4), weights_json
+    return engagement_index, weights_json
+
+def transform_motion_for_engagement(motion_level: float) -> float:
+    """
+    Преобразует уровень движения в оценку вовлечённости.
+    Слишком низкая активность -> подозрительно пассивное поведение.
+    Умеренная активность -> лучший диапазон.
+    Слишком высокая активность -> тоже снижает оценку.
+    """
+
+    motion = float(motion_level)
+
+    if motion <= 0.02:
+        return 0.20
+    if motion <= 0.05:
+        return 0.20 + (motion - 0.02) / 0.03 * 0.30   # 0.20 -> 0.50
+    if motion <= 0.15:
+        return 0.50 + (motion - 0.05) / 0.10 * 0.45   # 0.50 -> 0.95
+    if motion <= 0.30:
+        return 0.95 - (motion - 0.15) / 0.15 * 0.20   # 0.95 -> 0.75
+    if motion <= 0.50:
+        return 0.75 - (motion - 0.30) / 0.20 * 0.25   # 0.75 -> 0.50
+
+    return 0.40
 
 
 def create_or_update_engagement_metric(
@@ -546,43 +622,83 @@ def build_student_analytics_summary(db: Session, student_id: int):
     student = get_user_by_id(db, student_id)
     groups = get_groups_by_student(db, student_id)
 
-    attendance_records = get_attendance_by_student(db, student_id)
-    attendance_weights = {
-        models.AttendanceStatus.PRESENT: 1.0,
-        models.AttendanceStatus.LATE: 0.7,
-        models.AttendanceStatus.EXCUSED: 0.6,
-        models.AttendanceStatus.ABSENT: 0.0,
-    }
+    snapshots = get_student_academic_snapshots_by_student(db, student_id)
 
-    total_attendance_records = len(attendance_records)
-    attended_records = sum(
-        1 for record in attendance_records
-        if record.status in {
-            models.AttendanceStatus.PRESENT,
-            models.AttendanceStatus.LATE,
-            models.AttendanceStatus.EXCUSED,
+    if snapshots:
+        total_attendance_records = sum(int(snapshot.total_classes) for snapshot in snapshots)
+        attended_records = sum(int(snapshot.attended_classes) for snapshot in snapshots)
+
+        attendance_rate_percent = None
+        if total_attendance_records > 0:
+            attendance_rate_percent = round(attended_records / total_attendance_records * 100, 2)
+
+        snapshot_attendance_scores = [
+            calculate_snapshot_attendance_score(snapshot)
+            for snapshot in snapshots
+        ]
+        snapshot_attendance_scores = [
+            score for score in snapshot_attendance_scores if score is not None
+        ]
+
+        attendance_score = None
+        if snapshot_attendance_scores:
+            attendance_score = round(
+                sum(snapshot_attendance_scores) / len(snapshot_attendance_scores),
+                4,
+            )
+
+        academic_scores = [
+            normalize_average_score_50(float(snapshot.average_score))
+            for snapshot in snapshots
+        ]
+        academic_scores = [score for score in academic_scores if score is not None]
+
+        average_academic_score = None
+        if academic_scores:
+            average_academic_score = round(sum(academic_scores) / len(academic_scores), 4)
+
+        total_assessment_results = len(snapshots)
+
+    else:
+        attendance_records = get_attendance_by_student(db, student_id)
+        attendance_weights = {
+            models.AttendanceStatus.PRESENT: 1.0,
+            models.AttendanceStatus.LATE: 0.7,
+            models.AttendanceStatus.EXCUSED: 0.6,
+            models.AttendanceStatus.ABSENT: 0.0,
         }
-    )
 
-    attendance_rate_percent = None
-    attendance_score = None
-    if total_attendance_records > 0:
-        attendance_rate_percent = round(attended_records / total_attendance_records * 100, 2)
-        attendance_score = round(
-            sum(attendance_weights[record.status] for record in attendance_records) / total_attendance_records,
-            4,
+        total_attendance_records = len(attendance_records)
+        attended_records = sum(
+            1 for record in attendance_records
+            if record.status in {
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.LATE,
+                models.AttendanceStatus.EXCUSED,
+            }
         )
 
-    assessment_results = get_results_by_student(db, student_id)
-    academic_scores = [
-        score for score in
-        (normalize_assessment_result(result) for result in assessment_results)
-        if score is not None
-    ]
+        attendance_rate_percent = None
+        attendance_score = None
+        if total_attendance_records > 0:
+            attendance_rate_percent = round(attended_records / total_attendance_records * 100, 2)
+            attendance_score = round(
+                sum(attendance_weights[record.status] for record in attendance_records) / total_attendance_records,
+                4,
+            )
 
-    average_academic_score = None
-    if academic_scores:
-        average_academic_score = round(sum(academic_scores) / len(academic_scores), 4)
+        assessment_results = get_results_by_student(db, student_id)
+        academic_scores = [
+            score for score in
+            (normalize_assessment_result(result) for result in assessment_results)
+            if score is not None
+        ]
+
+        average_academic_score = None
+        if academic_scores:
+            average_academic_score = round(sum(academic_scores) / len(academic_scores), 4)
+
+        total_assessment_results = len(assessment_results)
 
     engagement_metrics = get_engagement_metrics_by_student(db, student_id)
     engagement_scores = [round(float(metric.engagement_index), 4) for metric in engagement_metrics]
@@ -631,7 +747,7 @@ def build_student_analytics_summary(db: Session, student_id: int):
         attended_records=attended_records,
         attendance_rate_percent=attendance_rate_percent,
         attendance_score=attendance_score,
-        total_assessment_results=len(assessment_results),
+        total_assessment_results=total_assessment_results,
         average_academic_score=average_academic_score,
         total_engagement_metrics=len(engagement_metrics),
         average_engagement_index=average_engagement_index,
@@ -1045,3 +1161,156 @@ def generate_recommendations_for_group(db: Session, group_id: int):
         total_students=len(students),
         total_generated_recommendations=total_generated,
     )
+
+def get_group_by_name(db: Session, name: str):
+    return db.query(models.Group).filter(models.Group.name == name).first()
+
+def get_student_academic_snapshot(
+    db: Session,
+    student_id: int,
+    group_id: int,
+    subject_name: str,
+):
+    return (
+        db.query(models.StudentAcademicSnapshot)
+        .filter(
+            models.StudentAcademicSnapshot.student_id == student_id,
+            models.StudentAcademicSnapshot.group_id == group_id,
+            models.StudentAcademicSnapshot.subject_name == subject_name,
+        )
+        .first()
+    )
+
+def create_or_update_student_academic_snapshot(
+    db: Session,
+    student_id: int,
+    group_id: int,
+    subject_name: str,
+    total_classes: int,
+    attended_classes: int,
+    excused_missed_classes: int,
+    average_score: float,
+):
+    existing = get_student_academic_snapshot(
+        db=db,
+        student_id=student_id,
+        group_id=group_id,
+        subject_name=subject_name,
+    )
+
+    if existing:
+        existing.total_classes = total_classes
+        existing.attended_classes = attended_classes
+        existing.excused_missed_classes = excused_missed_classes
+        existing.average_score = average_score
+
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    snapshot = models.StudentAcademicSnapshot(
+        student_id=student_id,
+        group_id=group_id,
+        subject_name=subject_name,
+        total_classes=total_classes,
+        attended_classes=attended_classes,
+        excused_missed_classes=excused_missed_classes,
+        average_score=average_score,
+    )
+    db.add(snapshot)
+    db.commit()
+    db.refresh(snapshot)
+    return snapshot
+
+def get_student_academic_snapshots_by_student(db: Session, student_id: int):
+    return (
+        db.query(models.StudentAcademicSnapshot)
+        .filter(models.StudentAcademicSnapshot.student_id == student_id)
+        .all()
+    )
+
+def normalize_average_score_50(score: float | None):
+    if score is None:
+        return None
+    normalized = float(score) / 50.0
+    return round(max(0.0, min(1.0, normalized)), 4)
+
+def calculate_snapshot_attendance_score(snapshot: models.StudentAcademicSnapshot):
+    if snapshot.total_classes <= 0:
+        return None
+
+    score = (
+        float(snapshot.attended_classes) +
+        0.6 * float(snapshot.excused_missed_classes)
+    ) / float(snapshot.total_classes)
+
+    return round(max(0.0, min(1.0, score)), 4)
+
+def get_group_by_name(db: Session, group_name: str):
+    return (
+        db.query(models.Group)
+        .filter(models.Group.name == group_name)
+        .first()
+    )
+
+
+def get_student_academic_snapshot(
+    db: Session,
+    student_id: int,
+    group_id: int,
+    subject_name: str,
+):
+    return (
+        db.query(models.StudentAcademicSnapshot)
+        .filter(
+            models.StudentAcademicSnapshot.student_id == student_id,
+            models.StudentAcademicSnapshot.group_id == group_id,
+            models.StudentAcademicSnapshot.subject_name == subject_name,
+        )
+        .first()
+    )
+
+
+def get_latest_student_academic_snapshot(db: Session, student_id: int):
+    return (
+        db.query(models.StudentAcademicSnapshot)
+        .filter(models.StudentAcademicSnapshot.student_id == student_id)
+        .order_by(models.StudentAcademicSnapshot.imported_at.desc())
+        .first()
+    )
+
+
+def create_student_academic_snapshot(
+    db: Session,
+    snapshot_data: schemas.StudentAcademicSnapshotCreate,
+):
+    existing = get_student_academic_snapshot(
+        db=db,
+        student_id=snapshot_data.student_id,
+        group_id=snapshot_data.group_id,
+        subject_name=snapshot_data.subject_name,
+    )
+
+    if existing:
+        existing.total_classes = snapshot_data.total_classes
+        existing.attended_classes = snapshot_data.attended_classes
+        existing.excused_missed_classes = snapshot_data.excused_missed_classes
+        existing.average_score = snapshot_data.average_score
+
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    snapshot = models.StudentAcademicSnapshot(
+        student_id=snapshot_data.student_id,
+        group_id=snapshot_data.group_id,
+        subject_name=snapshot_data.subject_name,
+        total_classes=snapshot_data.total_classes,
+        attended_classes=snapshot_data.attended_classes,
+        excused_missed_classes=snapshot_data.excused_missed_classes,
+        average_score=snapshot_data.average_score,
+    )
+    db.add(snapshot)
+    db.commit()
+    db.refresh(snapshot)
+    return snapshot

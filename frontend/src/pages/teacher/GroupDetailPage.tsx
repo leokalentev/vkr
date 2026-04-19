@@ -12,19 +12,23 @@ type Student = {
   role: "student" | "teacher" | "admin";
 };
 
-type ImportedStudent = {
-  id: number;
+type AcademicSnapshotImportItem = {
+  student_id: number;
   email: string;
-  first_name: string;
-  last_name: string;
-  middle_name: string | null;
-  role: "student" | "teacher" | "admin";
+  full_name: string;
+  group_name: string;
+  subject_name: string;
+  total_classes: number;
+  attended_classes: number;
+  excused_missed_classes: number;
+  average_score: number;
 };
 
-type ImportStudentsResponse = {
-  group_id: number;
+type AcademicSnapshotImportResponse = {
   imported_count: number;
-  imported_students: ImportedStudent[];
+  created_students_count: number;
+  created_groups_count: number;
+  processed_items: AcademicSnapshotImportItem[];
 };
 
 export default function GroupDetailPage() {
@@ -37,7 +41,7 @@ export default function GroupDetailPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [importLoading, setImportLoading] = useState(false);
   const [importError, setImportError] = useState("");
-  const [importResult, setImportResult] = useState<ImportStudentsResponse | null>(null);
+  const [importResult, setImportResult] = useState<AcademicSnapshotImportResponse | null>(null);
 
   const fetchStudents = async () => {
     try {
@@ -61,7 +65,7 @@ export default function GroupDetailPage() {
     setImportError("");
   };
 
-  const handleImport = async () => {
+  const handleAcademicImport = async () => {
     if (!selectedFile) {
       setImportError("Сначала выбери Excel-файл");
       return;
@@ -75,18 +79,22 @@ export default function GroupDetailPage() {
       setImportError("");
       setImportResult(null);
 
-      const res = await api.post(`/groups/${id}/import-students`, formData, {
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
-      });
+      const res = await api.post<AcademicSnapshotImportResponse>(
+        `/groups/${id}/import-academic-snapshots`,
+        formData,
+        {
+          headers: {
+            "Content-Type": "multipart/form-data",
+          },
+        }
+      );
 
       setImportResult(res.data);
       setSelectedFile(null);
       await fetchStudents();
     } catch (err: any) {
       setImportError(
-        err?.response?.data?.detail || "Не удалось импортировать студентов"
+        err?.response?.data?.detail || "Не удалось импортировать академические данные"
       );
     } finally {
       setImportLoading(false);
@@ -102,7 +110,7 @@ export default function GroupDetailPage() {
   }
 
   return (
-    <div style={{ maxWidth: 980, margin: "40px auto" }}>
+    <div style={{ maxWidth: 1100, margin: "40px auto" }}>
       <div style={{ marginBottom: 20, display: "flex", gap: 16, flexWrap: "wrap" }}>
         <Link to="/teacher">← На главную</Link>
         <Link to="/groups">← Назад к группам</Link>
@@ -112,12 +120,23 @@ export default function GroupDetailPage() {
       <h1 style={{ marginBottom: 20 }}>Группа #{id}</h1>
 
       <div style={cardStyle}>
-        <h2 style={{ marginTop: 0 }}>Импорт студентов из Excel</h2>
+        <h2 style={{ marginTop: 0 }}>Импорт академических данных из Excel</h2>
 
-        <p style={{ color: "#666" }}>
+        <p style={{ color: "#666", lineHeight: 1.6 }}>
           Поддерживаются файлы <strong>.xlsx</strong> и <strong>.xls</strong>.
-          Обязательные колонки: <code>full_name</code>, <code>email</code>.
-          Необязательная колонка: <code>date_of_birth</code>.
+          <br />
+          Обязательные колонки:
+          {" "}
+          <code>full_name</code>, <code>email</code>, <code>date_of_birth</code>,{" "}
+          <code>group_name</code>, <code>subject_name</code>, <code>total_classes</code>,{" "}
+          <code>attended_classes</code>, <code>excused_missed_classes</code>,{" "}
+          <code>average_score</code>.
+          <br />
+          При импорте система:
+          <br />— создаёт новых студентов
+          <br />— добавляет их в текущую группу
+          <br />— сохраняет учебные показатели
+          <br />— отправляет новым студентам логин и пароль на почту
         </p>
 
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
@@ -127,7 +146,7 @@ export default function GroupDetailPage() {
             onChange={handleFileChange}
           />
 
-          <button onClick={handleImport} disabled={importLoading}>
+          <button onClick={handleAcademicImport} disabled={importLoading}>
             {importLoading ? "Импорт..." : "Импортировать"}
           </button>
         </div>
@@ -145,21 +164,45 @@ export default function GroupDetailPage() {
         {importResult && (
           <div style={{ marginTop: 16 }}>
             <div style={{ color: "green", marginBottom: 8 }}>
-              Импорт завершён. Добавлено студентов:{" "}
-              <strong>{importResult.imported_count}</strong>
+              Импорт завершён успешно
             </div>
 
-            {importResult.imported_students.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              Обработано строк: <strong>{importResult.imported_count}</strong>
+              <br />
+              Создано новых студентов: <strong>{importResult.created_students_count}</strong>
+            </div>
+
+            {importResult.processed_items.length > 0 && (
               <div>
-                <h3 style={{ marginBottom: 8 }}>Добавленные/обработанные студенты</h3>
-                <ul style={{ marginTop: 0 }}>
-                  {importResult.imported_students.map((student) => (
-                    <li key={student.id}>
-                      {student.last_name} {student.first_name}{" "}
-                      {student.middle_name ?? ""} — {student.email}
-                    </li>
-                  ))}
-                </ul>
+                <h3 style={{ marginBottom: 8 }}>Обработанные данные</h3>
+
+                <table style={tableStyle}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Студент</th>
+                      <th style={thStyle}>Email</th>
+                      <th style={thStyle}>Предмет</th>
+                      <th style={thStyle}>Всего занятий</th>
+                      <th style={thStyle}>Посещено</th>
+                      <th style={thStyle}>Уваж. пропуски</th>
+                      <th style={thStyle}>Средний балл</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importResult.processed_items.map((item, index) => (
+                      <tr key={`${item.student_id}-${index}`}>
+                        <td style={tdStyle}>{item.full_name}</td>
+                        <td style={tdStyle}>{item.email}</td>
+                        <td style={tdStyle}>{item.subject_name}</td>
+                        <td style={tdStyle}>{item.total_classes}</td>
+                        <td style={tdStyle}>{item.attended_classes}</td>
+                        <td style={tdStyle}>{item.excused_missed_classes}</td>
+                        <td style={tdStyle}>{item.average_score}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
@@ -216,6 +259,12 @@ const cardStyle: CSSProperties = {
   borderRadius: 10,
   padding: 20,
   marginBottom: 20,
+};
+
+const tableStyle: CSSProperties = {
+  width: "100%",
+  borderCollapse: "collapse",
+  background: "white",
 };
 
 const thStyle: CSSProperties = {

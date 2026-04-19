@@ -1,5 +1,7 @@
 from pathlib import Path
 from uuid import uuid4
+import secrets
+import string
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +15,8 @@ from app.auth import (
     require_roles,
 )
 from app.security import hash_password
-from app.import_utils import read_students_excel
+from app.import_utils import read_students_excel, read_academic_snapshots_excel
+from app.email_utils import send_student_credentials_email
 from cv_module.service import analyze_video_file
 from cv_module.config import TEMPLATES_DIR
 
@@ -41,6 +44,11 @@ app.include_router(auth_router)
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+
+def generate_student_password(length: int = 10) -> str:
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 @app.get("/")
@@ -231,6 +239,140 @@ def import_students_to_group(
         group_id=group_id,
         imported_count=len(imported_students),
         imported_students=imported_students,
+    )
+
+
+# =========================
+# IMPORT ACADEMIC SNAPSHOTS FROM EXCEL
+# =========================
+
+@app.post(
+    "/import/academic-snapshots",
+    response_model=schemas.AcademicSnapshotImportResponse,
+)
+def import_academic_snapshots(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
+    ),
+):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="File name is missing")
+
+    if not file.filename.lower().endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="Only Excel files are supported")
+
+    try:
+        file_bytes = file.file.read()
+        rows = read_academic_snapshots_excel(file_bytes)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read Excel file: {str(e)}")
+
+    processed_items = []
+    created_students_count = 0
+    created_groups_count = 0
+
+    for row in rows:
+        student = crud.get_user_by_email(db, row["email"])
+        created_now = False
+        plain_password = None
+
+        if not student:
+            plain_password = generate_student_password()
+            password_hash = hash_password(plain_password)
+
+            student = crud.create_student_with_profile(
+                db=db,
+                email=row["email"],
+                password_hash=password_hash,
+                first_name=row["first_name"],
+                last_name=row["last_name"],
+                middle_name=row["middle_name"],
+                date_of_birth=row["date_of_birth"],
+            )
+            created_students_count += 1
+            created_now = True
+        else:
+            if student.role != models.UserRole.STUDENT:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"User with email {row['email']} already exists and is not a student"
+                )
+
+        group = crud.get_group_by_name(db, row["group_name"])
+        if not group:
+            curator_id = current_user.id if current_user.role == models.UserRole.TEACHER else None
+            group = crud.create_group(
+                db,
+                schemas.GroupCreate(
+                    name=row["group_name"],
+                    curator_id=curator_id,
+                )
+            )
+            created_groups_count += 1
+
+        _, membership_error = crud.add_student_to_group(db, group.id, student.id)
+        if membership_error not in (None, "already_in_group"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to assign student {row['email']} to group {row['group_name']}: {membership_error}"
+            )
+
+        snapshot = crud.create_student_academic_snapshot(
+            db,
+            schemas.StudentAcademicSnapshotCreate(
+                student_id=student.id,
+                group_id=group.id,
+                subject_name=row["subject_name"],
+                total_classes=row["total_classes"],
+                attended_classes=row["attended_classes"],
+                excused_missed_classes=row["excused_missed_classes"],
+                average_score=row["average_score"],
+            )
+        )
+
+        if created_now and plain_password:
+            full_name = f"{student.last_name} {student.first_name}"
+            if student.middle_name:
+                full_name += f" {student.middle_name}"
+
+            try:
+                send_student_credentials_email(
+                    to_email=student.email,
+                    full_name=full_name,
+                    login=student.email,
+                    password=plain_password,
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Student {student.email} was created, but email sending failed: {str(e)}"
+                )
+
+        processed_items.append(
+            schemas.AcademicSnapshotImportItem(
+                student_id=student.id,
+                email=student.email,
+                full_name=f"{student.last_name} {student.first_name}" + (
+                    f" {student.middle_name}" if student.middle_name else ""
+                ),
+                group_name=group.name,
+                subject_name=snapshot.subject_name,
+                total_classes=snapshot.total_classes,
+                attended_classes=snapshot.attended_classes,
+                excused_missed_classes=snapshot.excused_missed_classes,
+                average_score=float(snapshot.average_score),
+            )
+        )
+
+    return schemas.AcademicSnapshotImportResponse(
+        imported_count=len(processed_items),
+        created_students_count=created_students_count,
+        created_groups_count=created_groups_count,
+        processed_items=processed_items,
     )
 
 
@@ -712,3 +854,135 @@ def get_student_results(
         raise HTTPException(status_code=404, detail="Student not found")
 
     return crud.get_results_by_student(db, student_id)
+
+@app.post(
+    "/groups/{group_id}/import-academic-snapshots",
+    response_model=schemas.AcademicSnapshotImportResponse,
+)
+def import_academic_snapshots_to_group(
+    group_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
+    ),
+):
+    group = crud.get_group_by_id(db, group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="File name is missing")
+
+    if not file.filename.lower().endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="Only Excel files are supported")
+
+    try:
+        file_bytes = file.file.read()
+        rows = read_academic_snapshots_excel(file_bytes)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read Excel file: {str(e)}")
+
+    processed_items = []
+    created_students_count = 0
+    created_groups_count = 0  # для совместимости со схемой, тут всегда 0
+
+    for row in rows:
+        # Проверяем, что группа в Excel совпадает с текущей страницей группы
+        if row["group_name"].strip() != group.name:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"В Excel указана группа '{row['group_name']}', "
+                    f"но импорт выполняется для группы '{group.name}'"
+                ),
+            )
+
+        student = crud.get_user_by_email(db, row["email"])
+        created_now = False
+        plain_password = None
+
+        if not student:
+            plain_password = generate_student_password()
+            password_hash = hash_password(plain_password)
+
+            student = crud.create_student_with_profile(
+                db=db,
+                email=row["email"],
+                password_hash=password_hash,
+                first_name=row["first_name"],
+                last_name=row["last_name"],
+                middle_name=row["middle_name"],
+                date_of_birth=row["date_of_birth"],
+            )
+            created_students_count += 1
+            created_now = True
+        else:
+            if student.role != models.UserRole.STUDENT:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"User with email {row['email']} already exists and is not a student"
+                )
+
+        _, membership_error = crud.add_student_to_group(db, group.id, student.id)
+        if membership_error not in (None, "already_in_group"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to assign student {row['email']} to group {group.name}: {membership_error}"
+            )
+
+        snapshot = crud.create_student_academic_snapshot(
+            db,
+            schemas.StudentAcademicSnapshotCreate(
+                student_id=student.id,
+                group_id=group.id,
+                subject_name=row["subject_name"],
+                total_classes=row["total_classes"],
+                attended_classes=row["attended_classes"],
+                excused_missed_classes=row["excused_missed_classes"],
+                average_score=row["average_score"],
+            )
+        )
+
+        if created_now and plain_password:
+            full_name = f"{student.last_name} {student.first_name}"
+            if student.middle_name:
+                full_name += f" {student.middle_name}"
+
+            try:
+                send_student_credentials_email(
+                    to_email=student.email,
+                    full_name=full_name,
+                    login=student.email,
+                    password=plain_password,
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Student {student.email} was created, but email sending failed: {str(e)}"
+                )
+
+        processed_items.append(
+            schemas.AcademicSnapshotImportItem(
+                student_id=student.id,
+                email=student.email,
+                full_name=f"{student.last_name} {student.first_name}" + (
+                    f" {student.middle_name}" if student.middle_name else ""
+                ),
+                group_name=group.name,
+                subject_name=snapshot.subject_name,
+                total_classes=snapshot.total_classes,
+                attended_classes=snapshot.attended_classes,
+                excused_missed_classes=snapshot.excused_missed_classes,
+                average_score=float(snapshot.average_score),
+            )
+        )
+
+    return schemas.AcademicSnapshotImportResponse(
+        imported_count=len(processed_items),
+        created_students_count=created_students_count,
+        created_groups_count=created_groups_count,
+        processed_items=processed_items,
+    )

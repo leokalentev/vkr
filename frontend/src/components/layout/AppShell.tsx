@@ -1,11 +1,11 @@
-import type { ReactNode } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import Sidebar from "./Sidebar";
 import Topbar from "./Topbar";
 
 type SidebarLink = {
   label: string;
   to: string;
+  icon?: string;
 };
 
 type Props = {
@@ -16,6 +16,8 @@ type Props = {
   children: ReactNode;
 };
 
+const SIDEBAR_WIDTH = 230;
+
 export default function AppShell({
   sidebarTitle,
   sidebarLinks,
@@ -24,32 +26,43 @@ export default function AppShell({
   children,
 }: Props) {
   return (
-    <div style={appStyle}>
-      <Sidebar title={sidebarTitle} links={sidebarLinks} />
+    <div style={rootStyle}>
+      <Sidebar title={sidebarTitle} links={sidebarLinks} width={SIDEBAR_WIDTH} />
 
-      <div style={mainAreaStyle}>
-        <div style={contentWrapperStyle}>
+      <main
+        style={{
+          ...mainStyle,
+          marginLeft: SIDEBAR_WIDTH,
+        }}
+      >
+        <div style={contentStyle}>
           <Topbar title={pageTitle} subtitle={pageSubtitle} />
-          <div>{children}</div>
+          <section style={pageBodyStyle}>{children}</section>
         </div>
-      </div>
+      </main>
     </div>
   );
 }
 
-const appStyle: CSSProperties = {
+const rootStyle: CSSProperties = {
   minHeight: "100vh",
+  background: "linear-gradient(135deg, #f8fbff 0%, #f3f6fb 45%, #f6f2ff 100%)",
+};
+
+const mainStyle: CSSProperties = {
+  minHeight: "100vh",
+};
+
+const contentStyle: CSSProperties = {
+  width: "100%",
+  margin: 0,
+  padding: "20px 24px 28px 16px",
+  boxSizing: "border-box",
+};
+
+const pageBodyStyle: CSSProperties = {
+  width: "100%",
   display: "flex",
-  background: "#f8fafc",
-};
-
-const mainAreaStyle: CSSProperties = {
-  flex: 1,
-  minWidth: 0,
-};
-
-const contentWrapperStyle: CSSProperties = {
-  maxWidth: 1280,
-  margin: "0 auto",
-  padding: 28,
+  flexDirection: "column",
+  gap: 24,
 };

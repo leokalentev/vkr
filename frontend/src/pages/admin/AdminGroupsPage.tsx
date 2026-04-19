@@ -1,7 +1,7 @@
-import { Link } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
 import api from "../../api/client";
 import type { CSSProperties, ChangeEvent } from "react";
+import AppShell from "../../components/layout/AppShell";
 
 type UserRole = "admin" | "teacher" | "student";
 
@@ -22,6 +22,12 @@ type Group = {
   curator_id: number | null;
   created_at: string;
 };
+
+const adminLinks = [
+  { label: "Главная", to: "/admin", icon: "🏠" },
+  { label: "Пользователи", to: "/admin/users", icon: "👥" },
+  { label: "Группы", to: "/admin/groups", icon: "🎓" },
+];
 
 export default function AdminGroupsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
@@ -96,117 +102,230 @@ export default function AdminGroupsPage() {
     }
   };
 
-  if (loading) {
-    return <div style={{ padding: 20 }}>Загрузка групп...</div>;
-  }
+  const getTeacherName = (teacherId: number | null) => {
+    if (!teacherId) return null;
+    const teacher = teachers.find((t) => t.id === teacherId);
+    if (!teacher) return `ID: ${teacherId}`;
+    return `${teacher.last_name} ${teacher.first_name}`;
+  };
 
   return (
-    <div style={{ maxWidth: 1200, margin: "40px auto" }}>
-      <div style={{ marginBottom: 20, display: "flex", gap: 16, flexWrap: "wrap" }}>
-        <Link to="/admin">← Назад в админку</Link>
-      </div>
+    <AppShell
+      sidebarTitle="Администратор"
+      sidebarLinks={adminLinks}
+      pageTitle="Учебные группы"
+      pageSubtitle="Создание и управление академическими группами"
+    >
+      {loading ? (
+        <div style={{ padding: 20 }}>Загрузка групп...</div>
+      ) : (
+        <>
+          <div style={cardStyle}>
+            <h2 style={sectionTitleStyle}>Создать группу</h2>
+            <p style={sectionSubtitleStyle}>
+              Укажите название группы и при необходимости назначьте куратора
+            </p>
 
-      <h1 style={{ marginBottom: 20 }}>Группы</h1>
+            <div style={{ ...formGridStyle, marginTop: 18 }}>
+              <input
+                style={inputStyle}
+                type="text"
+                placeholder="Например, ИС-203"
+                value={groupName}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setGroupName(e.target.value)}
+              />
 
-      <div style={cardStyle}>
-        <h2 style={{ marginTop: 0 }}>Создать группу</h2>
+              <select
+                style={inputStyle}
+                value={curatorId}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) => setCuratorId(e.target.value)}
+              >
+                <option value="">🎓 Без куратора</option>
+                {teachers.map((teacher) => (
+                  <option key={teacher.id} value={teacher.id}>
+                    👤 {teacher.last_name} {teacher.first_name}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-        <div style={formGridStyle}>
-          <input
-            style={inputStyle}
-            type="text"
-            placeholder="Например, ИС-203"
-            value={groupName}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setGroupName(e.target.value)}
-          />
+            <div style={{ marginTop: 18 }}>
+              <button onClick={handleCreateGroup} disabled={createLoading} style={primaryButtonStyle}>
+                ➕ {createLoading ? "Создание..." : "Создать группу"}
+              </button>
+            </div>
 
-          <select
-            style={inputStyle}
-            value={curatorId}
-            onChange={(e: ChangeEvent<HTMLSelectElement>) => setCuratorId(e.target.value)}
-          >
-            <option value="">Без куратора</option>
-            {teachers.map((teacher) => (
-              <option key={teacher.id} value={teacher.id}>
-                {teacher.last_name} {teacher.first_name} ({teacher.id})
-              </option>
-            ))}
-          </select>
-        </div>
+            {createError && <div style={messageErrorStyle}>{createError}</div>}
+            {createSuccess && <div style={messageSuccessStyle}>{createSuccess}</div>}
+          </div>
 
-        <div style={{ marginTop: 16 }}>
-          <button onClick={handleCreateGroup} disabled={createLoading}>
-            {createLoading ? "Создание..." : "Создать группу"}
-          </button>
-        </div>
+          <div style={cardStyle}>
+            <h2 style={sectionTitleStyle}>Список групп</h2>
+            <p style={sectionSubtitleStyle}>Все учебные группы, зарегистрированные в системе</p>
 
-        {createError && <div style={{ color: "red", marginTop: 12 }}>{createError}</div>}
-        {createSuccess && <div style={{ color: "green", marginTop: 12 }}>{createSuccess}</div>}
-      </div>
+            {error && <div style={messageErrorStyle}>{error}</div>}
 
-      <div style={cardStyle}>
-        <h2 style={{ marginTop: 0 }}>Список групп</h2>
-
-        {error && <div style={{ color: "red", marginBottom: 12 }}>{error}</div>}
-
-        <table style={tableStyle}>
-          <thead>
-            <tr>
-              <th style={thStyle}>ID</th>
-              <th style={thStyle}>Название</th>
-              <th style={thStyle}>Curator ID</th>
-              <th style={thStyle}>Создана</th>
-            </tr>
-          </thead>
-          <tbody>
-            {groups.map((group) => (
-              <tr key={group.id}>
-                <td style={tdStyle}>{group.id}</td>
-                <td style={tdStyle}>{group.name}</td>
-                <td style={tdStyle}>{group.curator_id ?? "—"}</td>
-                <td style={tdStyle}>{group.created_at}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
+            {groups.length === 0 ? (
+              <div style={emptyStateStyle}>Группы пока не созданы</div>
+            ) : (
+              <div style={{ ...tableWrapperStyle, marginTop: 16 }}>
+                <table style={tableStyle}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>ID</th>
+                      <th style={thStyle}>Название</th>
+                      <th style={thStyle}>Куратор</th>
+                      <th style={thStyle}>Дата создания</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {groups.map((group) => (
+                      <tr key={group.id}>
+                        <td style={tdStyle}>{group.id}</td>
+                        <td style={tdStyle}>
+                          <div style={{ fontWeight: 700 }}>🎓 {group.name}</div>
+                        </td>
+                        <td style={tdStyle}>
+                          {group.curator_id ? (
+                            <span style={badgeBlueStyle}>👤 {getTeacherName(group.curator_id)}</span>
+                          ) : (
+                            <span style={badgeGrayStyle}>— Не назначен</span>
+                          )}
+                        </td>
+                        <td style={tdStyle}>
+                          {new Date(group.created_at).toLocaleString("ru-RU")}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </AppShell>
   );
 }
 
 const cardStyle: CSSProperties = {
-  background: "white",
-  border: "1px solid #ddd",
-  borderRadius: 10,
-  padding: 20,
-  marginBottom: 24,
+  background: "rgba(255,255,255,0.88)",
+  border: "1px solid #e2e8f0",
+  borderRadius: 18,
+  padding: 22,
+  boxShadow: "0 8px 24px rgba(15, 23, 42, 0.05)",
+};
+
+const sectionTitleStyle: CSSProperties = {
+  margin: 0,
+  fontSize: 28,
+  fontWeight: 800,
+  color: "#0f172a",
+};
+
+const sectionSubtitleStyle: CSSProperties = {
+  margin: "8px 0 0",
+  fontSize: 14,
+  color: "#64748b",
 };
 
 const formGridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
-  gap: 12,
+  gap: 14,
 };
 
 const inputStyle: CSSProperties = {
-  padding: "10px 12px",
-  border: "1px solid #ccc",
-  borderRadius: 8,
+  width: "100%",
+  padding: "12px 14px",
+  border: "1px solid #cbd5e1",
+  borderRadius: 12,
+  fontSize: 14,
+  outline: "none",
+  background: "#fff",
+  boxSizing: "border-box",
+};
+
+const primaryButtonStyle: CSSProperties = {
+  background: "linear-gradient(135deg, #2563eb, #3b82f6)",
+  color: "#fff",
+  border: "none",
+  borderRadius: 12,
+  padding: "12px 18px",
+  fontSize: 14,
+  fontWeight: 700,
+  cursor: "pointer",
+};
+
+const messageErrorStyle: CSSProperties = {
+  marginTop: 12,
+  color: "#b91c1c",
+  background: "#fef2f2",
+  border: "1px solid #fecaca",
+  borderRadius: 12,
+  padding: "12px 14px",
+};
+
+const messageSuccessStyle: CSSProperties = {
+  marginTop: 12,
+  color: "#166534",
+  background: "#f0fdf4",
+  border: "1px solid #bbf7d0",
+  borderRadius: 12,
+  padding: "12px 14px",
+};
+
+const tableWrapperStyle: CSSProperties = {
+  overflowX: "auto",
+  border: "1px solid #e2e8f0",
+  borderRadius: 16,
 };
 
 const tableStyle: CSSProperties = {
   width: "100%",
-  borderCollapse: "collapse",
+  borderCollapse: "separate",
+  borderSpacing: 0,
 };
 
 const thStyle: CSSProperties = {
-  border: "1px solid #ddd",
-  padding: "10px",
   textAlign: "left",
-  background: "#f3f4f6",
+  padding: "14px 16px",
+  background: "#f8fafc",
+  color: "#334155",
+  fontWeight: 700,
+  borderBottom: "1px solid #e2e8f0",
 };
 
 const tdStyle: CSSProperties = {
-  border: "1px solid #ddd",
-  padding: "10px",
+  padding: "14px 16px",
+  borderBottom: "1px solid #e2e8f0",
+  color: "#0f172a",
+};
+
+const badgeBlueStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  padding: "6px 12px",
+  borderRadius: 999,
+  fontSize: 12,
+  fontWeight: 700,
+  background: "#dbeafe",
+  color: "#1d4ed8",
+};
+
+const badgeGrayStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  padding: "6px 12px",
+  borderRadius: 999,
+  fontSize: 12,
+  fontWeight: 700,
+  background: "#f1f5f9",
+  color: "#475569",
+};
+
+const emptyStateStyle: CSSProperties = {
+  padding: "24px 16px",
+  textAlign: "center",
+  color: "#64748b",
 };

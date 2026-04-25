@@ -122,7 +122,10 @@ export default function AdminUsersPage() {
       pageSubtitle="Создание и управление участниками образовательной системы"
     >
       {loading ? (
-        <div style={{ padding: 20 }}>Загрузка пользователей...</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "40px 20px", color: "#64748b", fontSize: 15 }}>
+          <div style={{ width: 20, height: 20, border: "2.5px solid #e2e8f0", borderTopColor: "#2563eb", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+          Загрузка пользователей...
+        </div>
       ) : (
         <>
           <div style={cardStyle}>
@@ -177,15 +180,15 @@ export default function AdminUsersPage() {
                 value={role}
                 onChange={(e: ChangeEvent<HTMLSelectElement>) => setRole(e.target.value as UserRole)}
               >
-                <option value="student">🎓 Студент</option>
-                <option value="teacher">📘 Преподаватель</option>
-                <option value="admin">🛠 Администратор</option>
+                <option value="student">Студент</option>
+                <option value="teacher">Преподаватель</option>
+                <option value="admin">Администратор</option>
               </select>
             </div>
 
             <div style={{ marginTop: 18 }}>
               <button onClick={handleCreateUser} disabled={createLoading} style={primaryButtonStyle}>
-                ➕ {createLoading ? "Создание..." : "Создать пользователя"}
+                {createLoading ? "Создание..." : "Создать пользователя"}
               </button>
             </div>
 
@@ -227,26 +230,17 @@ export default function AdminUsersPage() {
                           </div>
                         </td>
                         <td style={tdStyle}>
-                          <span
-                            style={{
-                              ...badgeStyle,
-                              ...getRoleBadgeStyle(user.role),
-                            }}
-                          >
-                            {user.role === "admin" && "🛠 admin"}
-                            {user.role === "teacher" && "📘 teacher"}
-                            {user.role === "student" && "🎓 student"}
+                          <span style={{ ...badgeStyle, ...getRoleBadgeStyle(user.role) }}>
+                            {user.role === "admin" && "Администратор"}
+                            {user.role === "teacher" && "Преподаватель"}
+                            {user.role === "student" && "Студент"}
                           </span>
                         </td>
                         <td style={tdStyle}>
                           {user.is_active ? (
-                            <span style={{ ...badgeStyle, background: "#dcfce7", color: "#15803d" }}>
-                              ✅ Активен
-                            </span>
+                            <span style={{ ...badgeStyle, background: "#dcfce7", color: "#15803d" }}>Активен</span>
                           ) : (
-                            <span style={{ ...badgeStyle, background: "#fee2e2", color: "#b91c1c" }}>
-                              ⛔ Неактивен
-                            </span>
+                            <span style={{ ...badgeStyle, background: "#fee2e2", color: "#b91c1c" }}>Неактивен</span>
                           )}
                         </td>
                       </tr>
@@ -272,7 +266,7 @@ const cardStyle: CSSProperties = {
 
 const sectionTitleStyle: CSSProperties = {
   margin: 0,
-  fontSize: 28,
+  fontSize: 18,
   fontWeight: 800,
   color: "#0f172a",
 };
@@ -343,10 +337,13 @@ const tableStyle: CSSProperties = {
 
 const thStyle: CSSProperties = {
   textAlign: "left",
-  padding: "14px 16px",
+  padding: "11px 16px",
   background: "#f8fafc",
-  color: "#334155",
-  fontWeight: 700,
+  color: "#475569",
+  fontWeight: 600,
+  fontSize: 12,
+  letterSpacing: "0.5px",
+  textTransform: "uppercase",
   borderBottom: "1px solid #e2e8f0",
 };
 

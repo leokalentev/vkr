@@ -117,7 +117,10 @@ export default function AdminGroupsPage() {
       pageSubtitle="Создание и управление академическими группами"
     >
       {loading ? (
-        <div style={{ padding: 20 }}>Загрузка групп...</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "40px 20px", color: "#64748b", fontSize: 15 }}>
+          <div style={{ width: 20, height: 20, border: "2.5px solid #e2e8f0", borderTopColor: "#2563eb", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+          Загрузка групп...
+        </div>
       ) : (
         <>
           <div style={cardStyle}>
@@ -140,10 +143,10 @@ export default function AdminGroupsPage() {
                 value={curatorId}
                 onChange={(e: ChangeEvent<HTMLSelectElement>) => setCuratorId(e.target.value)}
               >
-                <option value="">🎓 Без куратора</option>
+                <option value="">Без куратора</option>
                 {teachers.map((teacher) => (
                   <option key={teacher.id} value={teacher.id}>
-                    👤 {teacher.last_name} {teacher.first_name}
+                    {teacher.last_name} {teacher.first_name}
                   </option>
                 ))}
               </select>
@@ -151,7 +154,7 @@ export default function AdminGroupsPage() {
 
             <div style={{ marginTop: 18 }}>
               <button onClick={handleCreateGroup} disabled={createLoading} style={primaryButtonStyle}>
-                ➕ {createLoading ? "Создание..." : "Создать группу"}
+                {createLoading ? "Создание..." : "Создать группу"}
               </button>
             </div>
 
@@ -183,13 +186,13 @@ export default function AdminGroupsPage() {
                       <tr key={group.id}>
                         <td style={tdStyle}>{group.id}</td>
                         <td style={tdStyle}>
-                          <div style={{ fontWeight: 700 }}>🎓 {group.name}</div>
+                          <div style={{ fontWeight: 700, color: "#0f172a" }}>{group.name}</div>
                         </td>
                         <td style={tdStyle}>
                           {group.curator_id ? (
-                            <span style={badgeBlueStyle}>👤 {getTeacherName(group.curator_id)}</span>
+                            <span style={badgeBlueStyle}>{getTeacherName(group.curator_id)}</span>
                           ) : (
-                            <span style={badgeGrayStyle}>— Не назначен</span>
+                            <span style={badgeGrayStyle}>Не назначен</span>
                           )}
                         </td>
                         <td style={tdStyle}>
@@ -218,7 +221,7 @@ const cardStyle: CSSProperties = {
 
 const sectionTitleStyle: CSSProperties = {
   margin: 0,
-  fontSize: 28,
+  fontSize: 18,
   fontWeight: 800,
   color: "#0f172a",
 };
@@ -289,10 +292,13 @@ const tableStyle: CSSProperties = {
 
 const thStyle: CSSProperties = {
   textAlign: "left",
-  padding: "14px 16px",
+  padding: "11px 16px",
   background: "#f8fafc",
-  color: "#334155",
-  fontWeight: 700,
+  color: "#475569",
+  fontWeight: 600,
+  fontSize: 12,
+  letterSpacing: "0.5px",
+  textTransform: "uppercase",
   borderBottom: "1px solid #e2e8f0",
 };
 

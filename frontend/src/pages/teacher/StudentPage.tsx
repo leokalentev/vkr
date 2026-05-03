@@ -17,11 +17,17 @@ type StudentAnalyticsSummary = {
   integral_engagement_score: number | null; engagement_level: string;
   component_weights: { base_weights?: Record<string, number>; normalized_weights?: Record<string, number> };
 };
-type Recommendation = {
-  id: number; student_id: number; lesson_id: number | null;
-  recommendation_type: "academic" | "activity" | "risk" | "motivation";
-  title: string; text: string; confidence_score: number | null; is_read: boolean; created_at: string;
+type AcademicSnapshot = {
+  id: number; student_id: number; group_id: number;
+  subject_name: string; total_classes: number; attended_classes: number;
+  excused_missed_classes: number; average_score: number; imported_at: string;
 };
+type AssessmentResultRead = {
+  id: number; lesson_id: number; student_id: number;
+  score: number | null; max_score: number | null; grade_label: string | null;
+  final_score: number | null; teacher_comment: string | null; created_at: string;
+};
+
 type LessonShortRead = {
   id: number; group_id: number; teacher_id: number; title: string;
   lesson_date: string; starts_at: string; ends_at: string; location: string | null; description: string | null;
@@ -40,10 +46,30 @@ type VideoAnalysisResponse = {
 };
 
 const interpretationRows = [
-  { name: "Посещаемость", meaning: "Показывает, был ли студент реально зафиксирован на контрольном мероприятии.", effect: "Влияет на общий уровень участия студента в образовательном процессе." },
-  { name: "Учебный результат", meaning: "Отражает качество выполнения задания или контрольной работы.", effect: "Позволяет оценить академическую успешность студента." },
-  { name: "Индекс вовлечённости", meaning: "Объединяет поведенческие признаки: присутствие, внимание, устойчивость и активность.", effect: "Показывает, насколько студент был включён в процесс во время мероприятия." },
-  { name: "Интегральный индекс", meaning: "Итоговый показатель, объединяющий посещаемость, учебный результат и вовлечённость.", effect: "Используется системой для общего вывода и рекомендаций преподавателю." },
+  {
+    name: "Посещаемость",
+    range: "0–100%",
+    meaning: "Доля занятий, на которых студент был физически зафиксирован (лично или через видеоанализ).",
+    effect: "Вес 30% в интегральном индексе. Менее 50% — автоматически флаг риска.",
+  },
+  {
+    name: "Учебный результат",
+    range: "0–50 баллов",
+    meaning: "Средний балл из журнала успеваемости (импортируется из Excel). Отражает академическую успешность по предмету.",
+    effect: "Вес 30% в интегральном индексе. Баллы за конкретные мероприятия суммируются с базовым баллом.",
+  },
+  {
+    name: "Индекс вовлечённости",
+    range: "0.00–1.00",
+    meaning: "Поведенческий индекс, вычисленный по видео: присутствие в кадре (10%), распознавание лица (20%), взгляд прямо (20%), устойчивость положения (10%), двигательная активность (20%), стабильность позы (10%), оценка за работу (10%).",
+    effect: "Вес 40% в интегральном индексе. Главный показатель активного участия студента во время занятия.",
+  },
+  {
+    name: "Интегральный индекс",
+    range: "0.00–1.00",
+    meaning: "Итоговый показатель = 30% × посещаемость + 30% × учебный результат + 40% × вовлечённость. Если какой-то компонент отсутствует, веса перераспределяются между остальными.",
+    effect: "Основа для уровня (Высокий / Хороший / Средний / Низкий) и для автоматических рекомендаций. ≥0.85 — Высокий, ≥0.70 — Хороший, ≥0.50 — Средний, <0.50 — Низкий.",
+  },
 ];
 
 const teacherLinks = [
@@ -69,23 +95,12 @@ function translateEngagementLevel(level: string) {
   const map: Record<string, string> = { high: "Высокий", good: "Хороший", medium: "Средний", low: "Низкий", insufficient_data: "Недостаточно данных" };
   return map[level] || level;
 }
-function translateRecType(type: string) {
-  const map: Record<string, string> = { academic: "Учебная поддержка", activity: "Активность", risk: "Риск", motivation: "Мотивация" };
-  return map[type] || type;
-}
 function engagementLevelColor(level: string): { bg: string; color: string } {
   const m: Record<string, { bg: string; color: string }> = {
     high: { bg: "#dcfce7", color: "#16a34a" }, good: { bg: "#d1fae5", color: "#059669" },
     medium: { bg: "#fef9c3", color: "#ca8a04" }, low: { bg: "#fee2e2", color: "#dc2626" },
   };
   return m[level] ?? { bg: "#f1f5f9", color: "#64748b" };
-}
-function recTypeColor(type: string): { bg: string; color: string } {
-  const m: Record<string, { bg: string; color: string }> = {
-    academic: { bg: "#dbeafe", color: "#1d4ed8" }, activity: { bg: "#d1fae5", color: "#059669" },
-    risk: { bg: "#fee2e2", color: "#dc2626" }, motivation: { bg: "#ede9fe", color: "#7c3aed" },
-  };
-  return m[type] ?? { bg: "#f1f5f9", color: "#64748b" };
 }
 
 function MetricCard({ label, value, digits = 4, hint }: { label: string; value: number | null; digits?: number; hint?: string }) {
@@ -106,15 +121,26 @@ export default function StudentPage() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
 
+  // Visualization overlay
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const animFrameRef = useRef<number | null>(null);
+  const faceDetIntervalRef = useRef<number | null>(null);
+  const motionIntervalRef = useRef<number | null>(null);
+  const prevFrameDataRef = useRef<Uint8ClampedArray | null>(null);
+  const detectedFacesRef = useRef<Array<{ x: number; y: number; width: number; height: number }>>([]);
+  const motionLevelRef = useRef<number>(0);
+  const scanYRef = useRef<number>(0);
+  const isRecordingRef = useRef(false);
+
   const [data, setData] = useState<StudentAnalyticsSummary | null>(null);
-  const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
+  const [snapshots, setSnapshots] = useState<AcademicSnapshot[]>([]);
+  const [assessmentResults, setAssessmentResults] = useState<AssessmentResultRead[]>([]);
   const [lessons, setLessons] = useState<LessonShortRead[]>([]);
   const [loading, setLoading] = useState(true);
-  const [recLoading, setRecLoading] = useState(false);
   const [error, setError] = useState("");
-  const [recError, setRecError] = useState("");
 
   const [selectedLessonId, setSelectedLessonId] = useState("");
+  const [lessonAlreadyAnalyzed, setLessonAlreadyAnalyzed] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState<File | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
@@ -130,6 +156,19 @@ export default function StudentPage() {
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
   const [recordedFileName, setRecordedFileName] = useState("");
 
+  // Send report
+  const [sendLoading, setSendLoading] = useState(false);
+  const [sendError, setSendError] = useState("");
+  const [sendSuccess, setSendSuccess] = useState("");
+
+  // Exam grade form (0-50)
+  const [showGradeForm, setShowGradeForm] = useState(false);
+  const [gradeScore, setGradeScore] = useState("");
+  const [gradeComment, setGradeComment] = useState("");
+  const [gradeLoading, setGradeLoading] = useState(false);
+  const [gradeError, setGradeError] = useState("");
+  const [gradeSuccess, setGradeSuccess] = useState("");
+
   useEffect(() => {
     if (!analysisLoading) return;
     const t = window.setInterval(() => setElapsedSeconds((p) => p + 1), 1000);
@@ -142,14 +181,9 @@ export default function StudentPage() {
     return () => window.clearInterval(t);
   }, [recording]);
 
-  useEffect(() => { return () => stopCameraTracks(); }, []);
+  useEffect(() => { isRecordingRef.current = recording; }, [recording]);
+  useEffect(() => { return () => { stopVisualization(); stopCameraTracks(); }; }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const loadRecommendations = async () => {
-    try {
-      const res = await api.get(`/students/${id}/recommendations`);
-      setRecommendations(res.data); setRecError("");
-    } catch { setRecError("Не удалось загрузить рекомендации"); }
-  };
   const loadLessons = async () => {
     try {
       const res = await api.get<LessonShortRead[]>(`/students/${id}/lessons`);
@@ -161,27 +195,44 @@ export default function StudentPage() {
     const res = await api.get<StudentAnalyticsSummary>(`/students/${id}/analytics-summary`);
     setData(res.data);
   };
+  const loadSnapshots = async () => {
+    try {
+      const res = await api.get<AcademicSnapshot[]>(`/students/${id}/academic-snapshots`);
+      setSnapshots(res.data);
+    } catch { setSnapshots([]); }
+  };
+  const loadAssessmentResults = async () => {
+    try {
+      const res = await api.get<AssessmentResultRead[]>(`/students/${id}/results`);
+      setAssessmentResults(res.data);
+    } catch { setAssessmentResults([]); }
+  };
   const loadAll = async () => {
-    try { setLoading(true); setError(""); await Promise.all([loadStudentAnalytics(), loadRecommendations(), loadLessons()]); }
-    catch { setError("Не удалось загрузить аналитику студента"); }
+    try {
+      setLoading(true); setError("");
+      await Promise.all([loadStudentAnalytics(), loadLessons(), loadSnapshots(), loadAssessmentResults()]);
+    } catch { setError("Не удалось загрузить аналитику студента"); }
     finally { setLoading(false); }
   };
 
   useEffect(() => { loadAll(); }, [id]);// eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleGenerateRecommendations = async () => {
-    try { setRecLoading(true); setRecError(""); await api.post(`/students/${id}/generate-recommendations`); await loadRecommendations(); }
-    catch { setRecError("Не удалось сгенерировать рекомендации"); }
-    finally { setRecLoading(false); }
-  };
-  const handleMarkAsRead = async (recId: number) => {
-    try { await api.patch(`/recommendations/${recId}/read`); await loadRecommendations(); }
-    catch { setRecError("Не удалось отметить рекомендацию как прочитанную"); }
-  };
+  // Check if the selected lesson has already been analyzed for this student
+  useEffect(() => {
+    if (!selectedLessonId || !id) { setLessonAlreadyAnalyzed(false); return; }
+    api.get<{ student_id: number }[]>(`/lessons/${selectedLessonId}/engagement-metrics`)
+      .then((res) => {
+        const analyzed = res.data.some((m) => m.student_id === Number(id));
+        setLessonAlreadyAnalyzed(analyzed);
+      })
+      .catch(() => setLessonAlreadyAnalyzed(false));
+  }, [selectedLessonId, id]);
+
   const handleVideoChange = (e: ChangeEvent<HTMLInputElement>) => {
     setSelectedVideo(e.target.files?.[0] ?? null); setRecordedBlob(null); setRecordedFileName(""); setAnalysisError(""); setAnalysisSuccess("");
   };
   const stopCameraTracks = () => {
+    stopVisualization();
     streamRef.current?.getTracks().forEach((t) => t.stop()); streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
     setCameraEnabled(false);
@@ -191,7 +242,12 @@ export default function StudentPage() {
       setCameraError("");
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       streamRef.current = stream;
-      if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        // Start visualization after stream dimensions settle
+        setTimeout(startVisualization, 400);
+      }
       setCameraEnabled(true);
     } catch { setCameraError("Не удалось получить доступ к камере или микрофону"); setCameraEnabled(false); }
   };
@@ -224,12 +280,14 @@ export default function StudentPage() {
   const runAnalysis = async (fileToSend: File) => {
     if (!id) return;
     if (!selectedLessonId) { setAnalysisError("Выберите мероприятие"); setAnalysisSuccess(""); return; }
+    if (lessonAlreadyAnalyzed) { setAnalysisError("Мониторинг для этого мероприятия уже был проведён. Повторный анализ недоступен."); return; }
     try {
       setAnalysisLoading(true); setElapsedSeconds(0); setAnalysisError(""); setAnalysisSuccess(""); setAnalysisResult(null); setShowTechnicalDetails(false);
       const fd = new FormData(); fd.append("lesson_id", selectedLessonId); fd.append("student_id", id); fd.append("file", fileToSend);
       const res = await api.post<VideoAnalysisResponse>("/cv/analyze-video", fd, { headers: { "Content-Type": "multipart/form-data" } });
       setAnalysisResult(res.data); setAnalysisSuccess("Видео успешно обработано, результаты сохранены");
-      await Promise.all([loadStudentAnalytics(), loadRecommendations()]);
+      setLessonAlreadyAnalyzed(true);
+      await loadStudentAnalytics();
     } catch (err: any) {
       setAnalysisError(err?.response?.data?.detail || "Не удалось выполнить анализ видео"); setAnalysisSuccess("");
     } finally { setAnalysisLoading(false); }
@@ -243,6 +301,190 @@ export default function StudentPage() {
     await runAnalysis(new File([recordedBlob], recordedFileName, { type: recordedBlob.type || "video/webm" }));
   };
 
+  // ---- Camera visualization ----
+  const stopVisualization = () => {
+    if (animFrameRef.current)    { cancelAnimationFrame(animFrameRef.current); animFrameRef.current = null; }
+    if (faceDetIntervalRef.current) { clearInterval(faceDetIntervalRef.current); faceDetIntervalRef.current = null; }
+    if (motionIntervalRef.current)  { clearInterval(motionIntervalRef.current);  motionIntervalRef.current = null; }
+    prevFrameDataRef.current = null;
+    detectedFacesRef.current = [];
+    motionLevelRef.current = 0;
+    const canvas = canvasRef.current;
+    if (canvas) canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+  };
+
+  const startVisualization = () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+
+    // ── Helpers ────────────────────────────────────────────────────
+    const drawBrackets = (ctx: CanvasRenderingContext2D, W: number, H: number) => {
+      const len = 28, pad = 14;
+      ctx.strokeStyle = "rgba(0,255,128,0.75)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(pad, pad + len); ctx.lineTo(pad, pad); ctx.lineTo(pad + len, pad);
+      ctx.moveTo(W - pad - len, pad); ctx.lineTo(W - pad, pad); ctx.lineTo(W - pad, pad + len);
+      ctx.moveTo(pad, H - pad - len); ctx.lineTo(pad, H - pad); ctx.lineTo(pad + len, H - pad);
+      ctx.moveTo(W - pad - len, H - pad); ctx.lineTo(W - pad, H - pad); ctx.lineTo(W - pad, H - pad - len);
+      ctx.stroke();
+    };
+
+    const drawFaceBox = (ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) => {
+      const len = Math.min(w, h) * 0.22;
+      ctx.fillStyle = "rgba(0,255,128,0.04)";
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = "#00ff80";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(x, y + len); ctx.lineTo(x, y); ctx.lineTo(x + len, y);
+      ctx.moveTo(x + w - len, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + len);
+      ctx.moveTo(x, y + h - len); ctx.lineTo(x, y + h); ctx.lineTo(x + len, y + h);
+      ctx.moveTo(x + w - len, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - len);
+      ctx.stroke();
+      const label = "● ЛИЦО ОБНАРУЖЕНО";
+      ctx.font = "bold 11px monospace";
+      const tw = ctx.measureText(label).width;
+      ctx.fillStyle = "rgba(0,18,8,0.75)";
+      ctx.fillRect(x, y - 22, tw + 10, 20);
+      ctx.fillStyle = "#00ff80";
+      ctx.fillText(label, x + 5, y - 7);
+    };
+
+    const drawHUD = (ctx: CanvasRenderingContext2D, faceFound: boolean, motion: number, rec: boolean) => {
+      const lines = [
+        `FACE:   ${faceFound ? "DETECTED" : "SCANNING..."}`,
+        `MOTION: ${(motion * 100).toFixed(0)}%`,
+        rec ? "● REC" : "● LIVE",
+      ];
+      const lh = 16, padX = 8, padY = 6;
+      const bW = 160, bH = lines.length * lh + padY * 2;
+      ctx.fillStyle = "rgba(0,10,5,0.65)";
+      ctx.fillRect(10, 10, bW, bH);
+      ctx.font = "11px monospace";
+      lines.forEach((line, i) => {
+        if (i === 0)      ctx.fillStyle = faceFound ? "#00ff80" : "#ffcc00";
+        else if (i === 2) ctx.fillStyle = rec ? "#ff4444" : "#00ff80";
+        else              ctx.fillStyle = "#00ff80";
+        ctx.fillText(line, 10 + padX, 10 + padY + lh * (i + 0.82));
+      });
+    };
+
+    const drawMotionBar = (ctx: CanvasRenderingContext2D, W: number, H: number, motion: number) => {
+      const bH = 5, pad = 14, bW = W - pad * 2;
+      ctx.fillStyle = "rgba(0,10,5,0.45)";
+      ctx.fillRect(pad, H - bH - 8, bW, bH);
+      const color = motion < 0.3 ? "#00ff80" : motion < 0.6 ? "#ffcc00" : "#ff4444";
+      ctx.fillStyle = color;
+      ctx.fillRect(pad, H - bH - 8, bW * Math.min(motion, 1), bH);
+      ctx.fillStyle = "rgba(200,255,200,0.45)";
+      ctx.font = "9px monospace";
+      ctx.fillText("MOTION", pad, H - bH - 11);
+    };
+
+    // ── Motion detection (every 120 ms) ───────────────────────────
+    const offscreen = document.createElement("canvas");
+    let offCtx: CanvasRenderingContext2D | null = null;
+
+    motionIntervalRef.current = window.setInterval(() => {
+      if (video.readyState < 2) return;
+      if (!offCtx || offscreen.width !== video.videoWidth) {
+        offscreen.width  = video.videoWidth  || 640;
+        offscreen.height = video.videoHeight || 480;
+        offCtx = offscreen.getContext("2d", { willReadFrequently: true });
+      }
+      if (!offCtx) return;
+      offCtx.drawImage(video, 0, 0, offscreen.width, offscreen.height);
+      const frame = offCtx.getImageData(0, 0, offscreen.width, offscreen.height);
+      const prev  = prevFrameDataRef.current;
+      if (prev && prev.length === frame.data.length) {
+        let diff = 0;
+        const step = 4;
+        for (let i = 0; i < frame.data.length; i += 4 * step) {
+          const d = (Math.abs(frame.data[i]   - prev[i])
+                  +  Math.abs(frame.data[i+1] - prev[i+1])
+                  +  Math.abs(frame.data[i+2] - prev[i+2])) / 3;
+          if (d > 20) diff++;
+        }
+        motionLevelRef.current = Math.min(1, (diff / (frame.data.length / (4 * step))) * 6);
+      }
+      prevFrameDataRef.current = new Uint8ClampedArray(frame.data);
+    }, 120);
+
+    // ── Face detection (every 180 ms, browser FaceDetector API) ──
+    let faceDetector: any = null;
+    try {
+      // @ts-expect-error — experimental browser API
+      if ("FaceDetector" in window) faceDetector = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 1 });
+    } catch { /* not supported */ }
+
+    if (faceDetector) {
+      faceDetIntervalRef.current = window.setInterval(async () => {
+        if (video.readyState < 2) return;
+        try {
+          const faces = await faceDetector.detect(video);
+          detectedFacesRef.current = faces.map((f: any) => ({
+            x: f.boundingBox.x, y: f.boundingBox.y,
+            width: f.boundingBox.width, height: f.boundingBox.height,
+          }));
+        } catch { detectedFacesRef.current = []; }
+      }, 180);
+    }
+
+    // ── Draw loop ─────────────────────────────────────────────────
+    const draw = () => {
+      if (!video || !canvas) return;
+      const W = video.videoWidth || 640;
+      const H = video.videoHeight || 480;
+      if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { animFrameRef.current = requestAnimationFrame(draw); return; }
+
+      ctx.clearRect(0, 0, W, H);
+      drawBrackets(ctx, W, H);
+      detectedFacesRef.current.forEach((f) => drawFaceBox(ctx, f.x, f.y, f.width, f.height));
+      drawHUD(ctx, detectedFacesRef.current.length > 0, motionLevelRef.current, isRecordingRef.current);
+      drawMotionBar(ctx, W, H, motionLevelRef.current);
+
+      animFrameRef.current = requestAnimationFrame(draw);
+    };
+    animFrameRef.current = requestAnimationFrame(draw);
+  };
+
+  const handleSaveGrade = async () => {
+    if (!selectedLessonId) { setGradeError("Выберите мероприятие"); return; }
+    const scoreNum = parseFloat(gradeScore);
+    if (isNaN(scoreNum) || scoreNum < 0) { setGradeError("Введите корректные баллы (от 0 до 50)"); return; }
+    if (scoreNum > 50) { setGradeError("Максимальный балл за экзамен — 50"); return; }
+    try {
+      setGradeLoading(true); setGradeError(""); setGradeSuccess("");
+      await api.post("/assessment-results/", {
+        lesson_id: Number(selectedLessonId),
+        student_id: Number(id),
+        score: scoreNum,
+        max_score: 50,
+        teacher_comment: gradeComment.trim() || null,
+      });
+      setGradeSuccess(`Балл за экзамен сохранён: ${scoreNum} / 50`);
+      setGradeScore(""); setGradeComment("");
+      setShowGradeForm(false);
+      await Promise.all([loadAssessmentResults(), loadStudentAnalytics()]);
+    } catch (err: any) {
+      setGradeError(err?.response?.data?.detail || "Не удалось сохранить оценку");
+    } finally { setGradeLoading(false); }
+  };
+
+  const handleSendReport = async () => {
+    try {
+      setSendLoading(true); setSendError(""); setSendSuccess("");
+      await api.post(`/students/${id}/send-report`);
+      setSendSuccess("Статистика успешно отправлена на почту студента");
+    } catch (err: any) {
+      setSendError(err?.response?.data?.detail || "Не удалось отправить письмо");
+    } finally { setSendLoading(false); }
+  };
+
   const analysisDurationText = useMemo(() => {
     const m = Math.floor(elapsedSeconds / 60), s = elapsedSeconds % 60;
     return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
@@ -251,6 +493,20 @@ export default function StudentPage() {
     const m = Math.floor(recordingSeconds / 60), s = recordingSeconds % 60;
     return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   }, [recordingSeconds]);
+
+  // Compute average snapshot score for display
+  const avgSnapshotScore = useMemo(() => {
+    if (snapshots.length === 0) return null;
+    return snapshots.reduce((acc, s) => acc + s.average_score, 0) / snapshots.length;
+  }, [snapshots]);
+
+  // Assessment results for selected lesson
+  const lessonAssessments = useMemo(() => {
+    if (!selectedLessonId) return [];
+    return assessmentResults.filter((r) => r.lesson_id === Number(selectedLessonId));
+  }, [assessmentResults, selectedLessonId]);
+
+  const selectedLesson = useMemo(() => lessons.find((l) => String(l.id) === selectedLessonId), [lessons, selectedLessonId]);
 
   const studentName = data ? [data.student.last_name, data.student.first_name, data.student.middle_name].filter(Boolean).join(" ") : "";
   const initials = data ? `${data.student.first_name[0] ?? ""}${data.student.last_name[0] ?? ""}`.toUpperCase() : "?";
@@ -294,27 +550,250 @@ export default function StudentPage() {
               <span style={{ display: "inline-flex", padding: "6px 14px", borderRadius: 999, fontSize: 13, fontWeight: 700, background: levelColor.bg, color: levelColor.color }}>
                 {translateEngagementLevel(data.engagement_level)}
               </span>
-              <div style={{ fontSize: 13, color: "#64748b" }}>Интегральный: <strong style={{ color: "#0f172a" }}>{fmtV(data.integral_engagement_score)}</strong></div>
+              <div style={{ fontSize: 13, color: "#64748b" }}>
+                Интегральный: <strong style={{ color: "#0f172a" }}>{fmtV(data.integral_engagement_score)}</strong>
+                <span style={{ marginLeft: 6, color: "#94a3b8" }}>(0.30 × посещ. + 0.30 × учёба + 0.40 × вовл.)</span>
+              </div>
+              <button
+                onClick={handleSendReport}
+                disabled={sendLoading}
+                style={sendBtnStyle}
+                title="Отправить статистику посещений, оценок и итоговых баллов на email студента"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0 }}>
+                  <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                </svg>
+                {sendLoading ? "Отправка..." : "Отправить статистику"}
+              </button>
+              {sendError && <div style={{ fontSize: 12, color: "#dc2626", maxWidth: 280, textAlign: "right" }}>{sendError}</div>}
+              {sendSuccess && <div style={{ fontSize: 12, color: "#16a34a", maxWidth: 280, textAlign: "right" }}>{sendSuccess}</div>}
             </div>
           </div>
 
           {/* Stat cards */}
           <div style={grid3Style}>
+            {/* Attendance */}
             <div style={statCardStyle}>
               <div style={statLabelStyle}>Посещаемость</div>
               <div style={statValueStyle}>{fmtPct(data.attendance_rate_percent)}</div>
-              <div style={statHintStyle}>{data.attended_records} из {data.total_attendance_records} занятий · индекс {fmtV(data.attendance_score)}</div>
+              <div style={statHintStyle}>
+                {data.attended_records} из {data.total_attendance_records} занятий
+              </div>
+              <div style={{ ...statHintStyle, marginTop: 4, color: "#94a3b8" }}>
+                Индекс (0–1): {fmtV(data.attendance_score, 4)}
+              </div>
             </div>
+
+            {/* Academic score */}
             <div style={statCardStyle}>
-              <div style={statLabelStyle}>Учебный результат</div>
-              <div style={statValueStyle}>{fmtV(data.average_academic_score)}</div>
-              <div style={statHintStyle}>Всего оценок: {data.total_assessment_results}</div>
+              <div style={statLabelStyle}>Средний балл по журналу</div>
+              {avgSnapshotScore !== null ? (
+                <>
+                  <div style={statValueStyle}>
+                    {avgSnapshotScore.toFixed(1)}
+                    <span style={{ fontSize: 16, fontWeight: 500, color: "#64748b" }}> / 50</span>
+                  </div>
+                  <div style={statHintStyle}>
+                    {snapshots.length} {snapshots.length === 1 ? "предмет" : snapshots.length < 5 ? "предмета" : "предметов"} в журнале
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ ...statValueStyle, color: "#94a3b8" }}>—</div>
+                  <div style={statHintStyle}>Журнал не импортирован</div>
+                </>
+              )}
+              {assessmentResults.length > 0 && (
+                <div style={{ ...statHintStyle, marginTop: 4, color: "#2563eb" }}>
+                  + {assessmentResults.length} {assessmentResults.length === 1 ? "оценка" : "оценки"} за мероприятия
+                </div>
+              )}
             </div>
+
+            {/* Engagement */}
             <div style={statCardStyle}>
               <div style={statLabelStyle}>Индекс вовлечённости</div>
               <div style={statValueStyle}>{fmtV(data.average_engagement_index)}</div>
-              <div style={statHintStyle}>Всего метрик: {data.total_engagement_metrics}</div>
+              <div style={statHintStyle}>
+                {data.total_engagement_metrics === 0
+                  ? "Мониторинг ещё не проводился"
+                  : `По ${data.total_engagement_metrics} ${data.total_engagement_metrics === 1 ? "видеозаписи" : "видеозаписям"}`}
+              </div>
+              {data.average_engagement_index !== null && (
+                <div style={{ ...statHintStyle, marginTop: 4, color: "#64748b" }}>
+                  Уровень: {getEngagementLabel(data.average_engagement_index)}
+                </div>
+              )}
             </div>
+          </div>
+
+          {/* Academic snapshots detail */}
+          {snapshots.length > 0 && (
+            <div style={cardStyle}>
+              <h2 style={sectionTitleStyle}>Успеваемость по журналу</h2>
+              <p style={{ ...sectionSubtitleStyle, marginBottom: 14 }}>Данные импортированы из Excel-файла</p>
+              <div style={tableWrapStyle}>
+                <table style={tableStyle}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Предмет</th>
+                      <th style={thStyle}>Всего занятий</th>
+                      <th style={thStyle}>Посещено</th>
+                      <th style={thStyle}>Уваж. пропуски</th>
+                      <th style={thStyle}>Средний балл</th>
+                      <th style={thStyle}>% посещ.</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snapshots.map((s) => {
+                      const pct = s.total_classes > 0 ? ((s.attended_classes / s.total_classes) * 100).toFixed(1) : "—";
+                      return (
+                        <tr key={s.id}>
+                          <td style={{ ...tdStyle, fontWeight: 600 }}>{s.subject_name}</td>
+                          <td style={tdStyle}>{s.total_classes}</td>
+                          <td style={tdStyle}>
+                            <span style={badgeGreenStyle}>{s.attended_classes}</span>
+                          </td>
+                          <td style={tdStyle}>{s.excused_missed_classes}</td>
+                          <td style={tdStyle}>
+                            <span style={badgeBlueStyle}>{s.average_score.toFixed(1)} / 50</span>
+                          </td>
+                          <td style={{ ...tdStyle, color: "#64748b" }}>{pct}%</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Exam grades section */}
+          <div style={cardStyle}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
+              <div style={gradeIconStyle}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+              </div>
+              <div>
+                <h2 style={sectionTitleStyle}>Баллы за экзамен / зачёт</h2>
+                <p style={sectionSubtitleStyle}>Итоговая оценка = баллы за семестр (журнал) + баллы за экзамен · максимум 50 + 50 = 100</p>
+              </div>
+            </div>
+
+            {lessons.length === 0 ? (
+              <div style={{ color: "#94a3b8", fontSize: 14 }}>Нет мероприятий для оценивания</div>
+            ) : (
+              <div style={tableWrapStyle}>
+                <table style={tableStyle}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Мероприятие</th>
+                      <th style={{ ...thStyle, textAlign: "center" }}>Семестр (журнал)</th>
+                      <th style={{ ...thStyle, textAlign: "center" }}>Экзамен / зачёт</th>
+                      <th style={{ ...thStyle, textAlign: "center" }}>Итог</th>
+                      <th style={thStyle}>Комментарий</th>
+                      <th style={{ ...thStyle, width: 100 }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lessons.map((lesson) => {
+                      const ar = assessmentResults.find((r) => r.lesson_id === lesson.id);
+                      // Match snapshot by subject_name ≈ lesson.title (case-insensitive)
+                      const matchingSnap = snapshots.find(
+                        (s) => s.subject_name.toLowerCase() === lesson.title.toLowerCase()
+                      );
+                      const semesterScore = matchingSnap !== undefined ? matchingSnap.average_score : avgSnapshotScore;
+                      const examScore = ar?.score ?? null;
+                      const total = semesterScore !== null && examScore !== null ? semesterScore + examScore : null;
+                      const isEditing = showGradeForm && selectedLessonId === String(lesson.id);
+                      return (
+                        <tr key={lesson.id} style={isEditing ? { background: "#f0f7ff" } : {}}>
+                          <td style={{ ...tdStyle, fontWeight: 600 }}>
+                            <div>{lesson.title}</div>
+                            <div style={{ fontSize: 12, color: "#94a3b8", fontWeight: 400 }}>{new Date(lesson.lesson_date).toLocaleDateString("ru-RU")}</div>
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: "center" }}>
+                            {semesterScore !== null ? (
+                              <div>
+                                <span style={badgeGrayStyle}>{semesterScore.toFixed(1)} / 50</span>
+                                <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 3 }}>из журнала, не редакт.</div>
+                              </div>
+                            ) : <span style={{ color: "#94a3b8" }}>не загружен</span>}
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: "center" }}>
+                            {isEditing ? (
+                              <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "center" }}>
+                                <input
+                                  type="number" min={0} max={50} step={0.5}
+                                  value={gradeScore}
+                                  onChange={(e) => setGradeScore(e.target.value)}
+                                  placeholder="0–50"
+                                  style={{ ...inputSmStyle, width: 80, textAlign: "center" }}
+                                  autoFocus
+                                />
+                                <span style={{ color: "#64748b", fontWeight: 600 }}>/ 50</span>
+                              </div>
+                            ) : examScore !== null ? (
+                              <span style={badgeBlueStyle}>{examScore} / 50</span>
+                            ) : (
+                              <span style={{ color: "#94a3b8", fontSize: 13 }}>не выставлен</span>
+                            )}
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: "center" }}>
+                            {total !== null ? (
+                              <span style={{ fontWeight: 800, fontSize: 18, color: total >= 60 ? "#16a34a" : total >= 40 ? "#ca8a04" : "#dc2626" }}>
+                                {total.toFixed(1)}
+                                <span style={{ fontWeight: 400, fontSize: 13, color: "#94a3b8" }}> / 100</span>
+                              </span>
+                            ) : <span style={{ color: "#94a3b8" }}>—</span>}
+                          </td>
+                          <td style={{ ...tdStyle, color: "#64748b" }}>
+                            {isEditing ? (
+                              <input
+                                type="text"
+                                placeholder="Комментарий..."
+                                value={gradeComment}
+                                onChange={(e) => setGradeComment(e.target.value)}
+                                style={{ ...inputSmStyle, width: "100%" }}
+                              />
+                            ) : (
+                              <span style={{ fontStyle: ar?.teacher_comment ? "normal" : "italic" }}>
+                                {ar?.teacher_comment || "—"}
+                              </span>
+                            )}
+                          </td>
+                          <td style={tdStyle}>
+                            {isEditing ? (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                <button onClick={handleSaveGrade} disabled={gradeLoading} style={saveBtnSmStyle}>
+                                  {gradeLoading ? "..." : "Сохранить"}
+                                </button>
+                                <button onClick={() => { setShowGradeForm(false); setGradeScore(""); setGradeComment(""); setGradeError(""); }} style={cancelBtnSmStyle}>Отмена</button>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => {
+                                  setSelectedLessonId(String(lesson.id));
+                                  setGradeScore(ar?.score != null ? String(ar.score) : "");
+                                  setGradeComment(ar?.teacher_comment ?? "");
+                                  setGradeError(""); setGradeSuccess("");
+                                  setShowGradeForm(true);
+                                }}
+                                style={editGradeBtnStyle}
+                              >
+                                {ar ? "Изменить" : "Выставить"}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {gradeError && <div style={{ ...inlineErrStyle, marginTop: 12 }}>{gradeError}</div>}
+            {gradeSuccess && <div style={{ ...inlineSuccessStyle, marginTop: 12 }}>{gradeSuccess}</div>}
           </div>
 
           {/* Video monitoring */}
@@ -325,38 +804,68 @@ export default function StudentPage() {
               </div>
               <div>
                 <h2 style={sectionTitleStyle}>Видеомониторинг</h2>
-                <p style={sectionSubtitleStyle}>Анализ вовлечённости через камеру или загрузку видео</p>
+                <p style={sectionSubtitleStyle}>Анализ вовлечённости через камеру или загрузку видео · <strong>один раз на мероприятие</strong></p>
               </div>
             </div>
 
             {/* Lesson selector */}
             <div style={{ marginBottom: 18 }}>
               <label style={labelStyle}>Мероприятие</label>
-              <select value={selectedLessonId} onChange={(e) => setSelectedLessonId(e.target.value)} style={selectStyle}>
+              <select value={selectedLessonId} onChange={(e) => { setSelectedLessonId(e.target.value); setAnalysisError(""); setAnalysisSuccess(""); setAnalysisResult(null); }} style={selectStyle}>
                 <option value="">— Выберите мероприятие —</option>
                 {lessons.map((l) => (
                   <option key={l.id} value={l.id}>#{l.id} — {l.title} ({l.lesson_date})</option>
                 ))}
               </select>
+              {lessons.length === 0 && (
+                <div style={{ marginTop: 8, fontSize: 13, color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "8px 12px" }}>
+                  Занятия не найдены. Создайте их на{" "}
+                  {data?.groups[0] ? (
+                    <Link to={`/groups/${data.groups[0].id}`} style={{ color: "#2563eb", fontWeight: 600 }}>
+                      странице группы {data.groups[0].name}
+                    </Link>
+                  ) : (
+                    <Link to="/groups" style={{ color: "#2563eb", fontWeight: 600 }}>странице группы</Link>
+                  )}.
+                </div>
+              )}
+              {lessonAlreadyAnalyzed && selectedLessonId && (
+                <div style={{ marginTop: 8, fontSize: 13, color: "#065f46", background: "#d1fae5", border: "1px solid #6ee7b7", borderRadius: 10, padding: "8px 12px", display: "flex", alignItems: "center", gap: 8 }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#059669" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  Мониторинг для этого мероприятия уже проведён. Повторный анализ заблокирован.
+                </div>
+              )}
             </div>
 
             {/* Camera section */}
             <div style={subSectionStyle}>
               <div style={subSectionTitleStyle}>Запись с камеры</div>
-              <video ref={videoRef} autoPlay muted playsInline style={videoPreviewStyle} />
+              {/* Video + canvas overlay wrapper */}
+              <div style={{ position: "relative", display: "block", width: "100%", maxWidth: 600 }}>
+                <video ref={videoRef} autoPlay muted playsInline style={videoPreviewStyle} />
+                <canvas
+                  ref={canvasRef}
+                  style={{
+                    position: "absolute", top: 0, left: 0,
+                    width: "100%", height: "100%",
+                    pointerEvents: "none", borderRadius: 14,
+                    display: cameraEnabled ? "block" : "none",
+                  }}
+                />
+              </div>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
                 {!cameraEnabled ? (
-                  <button onClick={handleEnableCamera} style={btnPrimaryStyle}>Включить камеру</button>
+                  <button onClick={handleEnableCamera} disabled={lessonAlreadyAnalyzed} style={{ ...btnPrimaryStyle, opacity: lessonAlreadyAnalyzed ? 0.5 : 1 }}>Включить камеру</button>
                 ) : (
                   <button onClick={handleDisableCamera} style={btnDangerStyle}>Выключить камеру</button>
                 )}
-                {cameraEnabled && !recording && (
+                {cameraEnabled && !recording && !lessonAlreadyAnalyzed && (
                   <button onClick={handleStartRecording} style={btnGreenStyle}>Начать запись</button>
                 )}
                 {cameraEnabled && recording && (
                   <button onClick={handleStopRecording} style={btnDangerStyle}>Остановить запись</button>
                 )}
-                {recordedBlob && !recording && (
+                {recordedBlob && !recording && !lessonAlreadyAnalyzed && (
                   <button onClick={handleAnalyzeRecordedVideo} disabled={analysisLoading} style={btnPrimaryStyle}>
                     {analysisLoading ? `Анализ... ${analysisDurationText}` : "Проанализировать запись"}
                   </button>
@@ -381,14 +890,15 @@ export default function StudentPage() {
             <div style={subSectionStyle}>
               <div style={subSectionTitleStyle}>Загрузить готовое видео</div>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "stretch" }}>
-                <div style={fileDropStyle} onClick={() => fileInputRef.current?.click()}>
+                <div style={{ ...fileDropStyle, opacity: lessonAlreadyAnalyzed ? 0.5 : 1, cursor: lessonAlreadyAnalyzed ? "not-allowed" : "pointer" }}
+                  onClick={() => !lessonAlreadyAnalyzed && fileInputRef.current?.click()}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                   <span style={{ fontSize: 14, color: selectedVideo ? "#2563eb" : "#64748b", fontWeight: selectedVideo ? 600 : 400 }}>
                     {selectedVideo ? selectedVideo.name : "Выберите видеофайл"}
                   </span>
-                  <input ref={fileInputRef} type="file" accept="video/*" onChange={handleVideoChange} style={{ display: "none" }} />
+                  <input ref={fileInputRef} type="file" accept="video/*" onChange={handleVideoChange} style={{ display: "none" }} disabled={lessonAlreadyAnalyzed} />
                 </div>
-                <button onClick={handleAnalyzeUploadedVideo} disabled={analysisLoading || !selectedVideo} style={btnGreenStyle}>
+                <button onClick={handleAnalyzeUploadedVideo} disabled={analysisLoading || !selectedVideo || lessonAlreadyAnalyzed} style={{ ...btnGreenStyle, opacity: lessonAlreadyAnalyzed ? 0.5 : 1 }}>
                   {analysisLoading ? `Анализ... ${analysisDurationText}` : "Запустить анализ"}
                 </button>
               </div>
@@ -416,7 +926,7 @@ export default function StudentPage() {
                       { label: "Факт присутствия", value: analysisResult.attendance.status === "present" ? "Подтверждён" : "Не подтверждён" },
                       { label: "Уверенность распознавания", value: fmtV(analysisResult.attendance.confidence) },
                       { label: "Индекс вовлечённости", value: fmtV(analysisResult.engagement_metric.engagement_index) },
-                      { label: "Оценка по видео", value: getEngagementLabel(analysisResult.engagement_metric.engagement_index) },
+                      { label: "Уровень по видео", value: getEngagementLabel(analysisResult.engagement_metric.engagement_index) },
                     ].map((item) => (
                       <div key={item.label} style={summaryItemStyle}>
                         <div style={{ fontSize: 12, color: "#64748b", marginBottom: 6 }}>{item.label}</div>
@@ -463,20 +973,22 @@ export default function StudentPage() {
           {/* Interpretation table */}
           <div style={cardStyle}>
             <h2 style={sectionTitleStyle}>Интерпретация показателей</h2>
-            <p style={{ ...sectionSubtitleStyle, marginBottom: 16 }}>Пояснение к показателям, которые использует система</p>
+            <p style={{ ...sectionSubtitleStyle, marginBottom: 16 }}>Что означает каждый показатель и как он влияет на итоговый вывод</p>
             <div style={tableWrapStyle}>
               <table style={tableStyle}>
                 <thead>
                   <tr>
                     <th style={thStyle}>Показатель</th>
+                    <th style={{ ...thStyle, width: 80 }}>Диапазон</th>
                     <th style={thStyle}>Что означает</th>
-                    <th style={thStyle}>Как влияет на вывод</th>
+                    <th style={thStyle}>Роль в системе</th>
                   </tr>
                 </thead>
                 <tbody>
                   {interpretationRows.map((row) => (
                     <tr key={row.name}>
                       <td style={{ ...tdStyle, fontWeight: 700, whiteSpace: "nowrap" }}>{row.name}</td>
+                      <td style={{ ...tdStyle, color: "#2563eb", fontWeight: 600, whiteSpace: "nowrap" }}>{row.range}</td>
                       <td style={tdStyle}>{row.meaning}</td>
                       <td style={tdStyle}>{row.effect}</td>
                     </tr>
@@ -486,51 +998,6 @@ export default function StudentPage() {
             </div>
           </div>
 
-          {/* Recommendations */}
-          <div style={cardStyle}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 8 }}>
-              <div>
-                <h2 style={sectionTitleStyle}>Рекомендации</h2>
-                <p style={sectionSubtitleStyle}>Формируются на основе посещаемости, результатов и вовлечённости</p>
-              </div>
-              <button onClick={handleGenerateRecommendations} disabled={recLoading} style={btnPrimaryStyle}>
-                {recLoading ? "Генерация..." : "Сгенерировать рекомендации"}
-              </button>
-            </div>
-            {recError && <div style={inlineErrStyle}>{recError}</div>}
-            {recommendations.length === 0 ? (
-              <div style={emptyStyle}>Рекомендаций пока нет</div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 14 }}>
-                {recommendations.map((rec) => {
-                  const tc = recTypeColor(rec.recommendation_type);
-                  return (
-                    <div key={rec.id} style={{ ...recCardStyle, ...(rec.is_read ? {} : recCardUnreadStyle) }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
-                            <span style={{ fontWeight: 700, fontSize: 15, color: "#0f172a" }}>{rec.title}</span>
-                            <span style={{ display: "inline-flex", padding: "2px 10px", borderRadius: 999, fontSize: 11, fontWeight: 600, background: tc.bg, color: tc.color }}>{translateRecType(rec.recommendation_type)}</span>
-                            {rec.confidence_score != null && (
-                              <span style={{ fontSize: 12, color: "#94a3b8" }}>уверенность: {fmtV(rec.confidence_score, 2)}</span>
-                            )}
-                          </div>
-                          <p style={{ fontSize: 14, color: "#475569", lineHeight: 1.55 }}>{rec.text}</p>
-                        </div>
-                        <div style={{ flexShrink: 0 }}>
-                          {rec.is_read ? (
-                            <span style={{ display: "inline-flex", padding: "4px 12px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: "#dcfce7", color: "#16a34a" }}>Прочитано</span>
-                          ) : (
-                            <button onClick={() => handleMarkAsRead(rec.id)} style={outlineBtnStyle}>Отметить прочитанным</button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
         </>
       )}
     </AppShell>
@@ -557,6 +1024,7 @@ const videoIconStyle: CSSProperties = { width: 48, height: 48, borderRadius: 14,
 const sectionTitleStyle: CSSProperties = { fontSize: 18, fontWeight: 800, color: "#0f172a", marginBottom: 4 };
 const sectionSubtitleStyle: CSSProperties = { fontSize: 13, color: "#64748b" };
 const labelStyle: CSSProperties = { display: "block", fontSize: 13, fontWeight: 600, color: "#374151", marginBottom: 7 };
+const fieldLabelStyle: CSSProperties = { display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 5 };
 const selectStyle: CSSProperties = { width: "100%", maxWidth: 480, padding: "11px 14px", border: "1.5px solid #e2e8f0", borderRadius: 12, fontSize: 14, color: "#0f172a", background: "#f8fafc" };
 const subSectionStyle: CSSProperties = { marginBottom: 4 };
 const subSectionTitleStyle: CSSProperties = { fontSize: 14, fontWeight: 700, color: "#374151", marginBottom: 12 };
@@ -581,6 +1049,13 @@ const tableWrapStyle: CSSProperties = { overflowX: "auto", border: "1px solid #e
 const tableStyle: CSSProperties = { width: "100%", borderCollapse: "separate", borderSpacing: 0 };
 const thStyle: CSSProperties = { textAlign: "left", padding: "11px 16px", background: "#f8fafc", color: "#475569", fontWeight: 600, fontSize: 12, letterSpacing: "0.5px", textTransform: "uppercase", borderBottom: "1px solid #e2e8f0" };
 const tdStyle: CSSProperties = { padding: "13px 16px", borderBottom: "1px solid #f1f5f9", color: "#334155", fontSize: 14, verticalAlign: "top" };
-const recCardStyle: CSSProperties = { border: "1px solid #e2e8f0", borderRadius: 14, padding: "14px 16px", background: "#f8fafc" };
-const recCardUnreadStyle: CSSProperties = { borderColor: "#bfdbfe", background: "#eff6ff" };
 const emptyStyle: CSSProperties = { padding: "24px 0", textAlign: "center", color: "#94a3b8", fontSize: 14 };
+const badgeGreenStyle: CSSProperties = { display: "inline-flex", padding: "3px 10px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: "#dcfce7", color: "#16a34a" };
+const badgeBlueStyle: CSSProperties = { display: "inline-flex", padding: "3px 10px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: "#dbeafe", color: "#1d4ed8" };
+const badgeGrayStyle: CSSProperties = { display: "inline-flex", padding: "3px 10px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: "#f1f5f9", color: "#475569" };
+const inputSmStyle: CSSProperties = { padding: "8px 12px", border: "1.5px solid #e2e8f0", borderRadius: 10, fontSize: 14, color: "#0f172a", background: "#f8fafc", boxSizing: "border-box" };
+const gradeIconStyle: CSSProperties = { width: 48, height: 48, borderRadius: 14, flexShrink: 0, background: "linear-gradient(135deg,#f59e0b,#fbbf24)", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px rgba(245,158,11,0.28)" };
+const editGradeBtnStyle: CSSProperties = { padding: "5px 12px", borderRadius: 8, border: "1.5px solid #dbeafe", background: "#eff6ff", color: "#2563eb", fontSize: 12, fontWeight: 600, cursor: "pointer" };
+const saveBtnSmStyle: CSSProperties = { padding: "5px 12px", borderRadius: 8, border: "none", background: "linear-gradient(135deg,#059669,#10b981)", color: "white", fontSize: 12, fontWeight: 700, cursor: "pointer" };
+const cancelBtnSmStyle: CSSProperties = { padding: "5px 12px", borderRadius: 8, border: "1.5px solid #e2e8f0", background: "#f8fafc", color: "#64748b", fontSize: 12, fontWeight: 600, cursor: "pointer" };
+const sendBtnStyle: CSSProperties = { display: "inline-flex", alignItems: "center", gap: 7, padding: "8px 16px", borderRadius: 10, border: "none", background: "linear-gradient(135deg,#0891b2,#06b6d4)", color: "white", fontWeight: 700, fontSize: 13, cursor: "pointer", boxShadow: "0 3px 10px rgba(8,145,178,0.3)" };

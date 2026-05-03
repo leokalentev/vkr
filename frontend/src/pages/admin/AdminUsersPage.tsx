@@ -31,8 +31,8 @@ export default function AdminUsersPage() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [middleName, setMiddleName] = useState("");
-  const [password, setPassword] = useState("");
   const [role, setRole] = useState<UserRole>("student");
+
 
   const [createLoading, setCreateLoading] = useState(false);
   const [createError, setCreateError] = useState("");
@@ -56,8 +56,8 @@ export default function AdminUsersPage() {
   }, []);
 
   const handleCreateUser = async () => {
-    if (!email.trim() || !firstName.trim() || !lastName.trim() || !password.trim()) {
-      setCreateError("Заполни email, имя, фамилию и пароль");
+    if (!email.trim() || !firstName.trim() || !lastName.trim()) {
+      setCreateError("Заполни email, имя и фамилию");
       setCreateSuccess("");
       return;
     }
@@ -72,16 +72,14 @@ export default function AdminUsersPage() {
         first_name: firstName.trim(),
         last_name: lastName.trim(),
         middle_name: middleName.trim() || null,
-        password: password.trim(),
         role,
       });
 
-      setCreateSuccess("Пользователь успешно создан");
+      setCreateSuccess("Пользователь создан. Логин и пароль отправлены на указанный email.");
       setEmail("");
       setFirstName("");
       setLastName("");
       setMiddleName("");
-      setPassword("");
       setRole("student");
 
       await loadUsers();
@@ -146,14 +144,6 @@ export default function AdminUsersPage() {
               <input
                 style={inputStyle}
                 type="text"
-                placeholder="Имя"
-                value={firstName}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setFirstName(e.target.value)}
-              />
-
-              <input
-                style={inputStyle}
-                type="text"
                 placeholder="Фамилия"
                 value={lastName}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setLastName(e.target.value)}
@@ -162,17 +152,17 @@ export default function AdminUsersPage() {
               <input
                 style={inputStyle}
                 type="text"
-                placeholder="Отчество"
-                value={middleName}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setMiddleName(e.target.value)}
+                placeholder="Имя"
+                value={firstName}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setFirstName(e.target.value)}
               />
 
               <input
                 style={inputStyle}
-                type="password"
-                placeholder="Пароль"
-                value={password}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
+                type="text"
+                placeholder="Отчество"
+                value={middleName}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setMiddleName(e.target.value)}
               />
 
               <select
@@ -213,7 +203,7 @@ export default function AdminUsersPage() {
                       <th style={thStyle}>Email</th>
                       <th style={thStyle}>ФИО</th>
                       <th style={thStyle}>Роль</th>
-                      <th style={thStyle}>Статус</th>
+                      <th style={thStyle}>Доступ</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -238,9 +228,9 @@ export default function AdminUsersPage() {
                         </td>
                         <td style={tdStyle}>
                           {user.is_active ? (
-                            <span style={{ ...badgeStyle, background: "#dcfce7", color: "#15803d" }}>Активен</span>
+                            <span style={{ ...badgeStyle, background: "#dcfce7", color: "#15803d" }}>Может войти</span>
                           ) : (
-                            <span style={{ ...badgeStyle, background: "#fee2e2", color: "#b91c1c" }}>Неактивен</span>
+                            <span style={{ ...badgeStyle, background: "#fee2e2", color: "#b91c1c" }}>Заблокирован</span>
                           )}
                         </td>
                       </tr>

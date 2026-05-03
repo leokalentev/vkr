@@ -10,3 +10,5 @@ passlib[bcrypt]
 python-multipart
 openpyxl
 pandas
+numpy
+scikit-fuzzy

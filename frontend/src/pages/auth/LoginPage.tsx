@@ -82,8 +82,7 @@ export default function LoginPage() {
               <path d="M2 16l10 5 10-5" stroke="white" strokeWidth="2" strokeLinecap="round" fill="none" opacity="0.45" />
             </svg>
           </div>
-          <h1 style={brandTitleStyle}>Student Insight</h1>
-          <p style={brandSubtitleStyle}>Система оценки вовлечённости студентов</p>
+          <h1 style={brandTitleStyle}>Система оценки вовлечённости</h1>
         </div>
 
         {/* Form */}
@@ -132,9 +131,6 @@ export default function LoginPage() {
           </button>
         </div>
 
-        <div style={footerTextStyle}>
-          Информационная система ВКР · 2024–2025
-        </div>
       </div>
     </div>
   );
@@ -215,12 +211,6 @@ const brandTitleStyle: CSSProperties = {
   marginBottom: 6,
 };
 
-const brandSubtitleStyle: CSSProperties = {
-  fontSize: 14,
-  color: "#64748b",
-  fontWeight: 400,
-};
-
 const labelStyle: CSSProperties = {
   display: "block",
   fontSize: 13,
@@ -269,9 +259,3 @@ const submitBtnStyle: CSSProperties = {
   letterSpacing: "0.2px",
 };
 
-const footerTextStyle: CSSProperties = {
-  textAlign: "center",
-  marginTop: 24,
-  color: "#94a3b8",
-  fontSize: 12,
-};

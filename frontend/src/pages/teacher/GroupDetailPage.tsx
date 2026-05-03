@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import api from "../../api/client";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ChangeEvent } from "react";
 import AppShell from "../../components/layout/AppShell";
 
 type Student = {
@@ -32,6 +32,15 @@ type AcademicSnapshotImportResponse = {
   processed_items: AcademicSnapshotImportItem[];
 };
 
+type Lesson = {
+  id: number;
+  title: string;
+  lesson_date: string;
+  starts_at: string;
+  ends_at: string;
+  location: string | null;
+};
+
 const teacherLinks = [
   { label: "Главная", to: "/teacher" },
   { label: "Группы", to: "/groups" },
@@ -50,6 +59,28 @@ export default function GroupDetailPage() {
   const [importError, setImportError] = useState("");
   const [importResult, setImportResult] = useState<AcademicSnapshotImportResponse | null>(null);
 
+  const [lessons, setLessons] = useState<Lesson[]>([]);
+  const [lessonType, setLessonType] = useState("Зачёт");
+  const [lessonTopic, setLessonTopic] = useState("");
+  const [lessonDate, setLessonDate] = useState("");
+  const [lessonStartTime, setLessonStartTime] = useState("09:00");
+  const [lessonEndTime, setLessonEndTime] = useState("10:30");
+  const [lessonLocation, setLessonLocation] = useState("");
+  const [lessonLoading, setLessonLoading] = useState(false);
+  const [lessonError, setLessonError] = useState("");
+  const [lessonSuccess, setLessonSuccess] = useState("");
+  const [teacherId, setTeacherId] = useState<number | null>(null);
+
+  const [editingLessonId, setEditingLessonId] = useState<number | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDate, setEditDate] = useState("");
+  const [editStartTime, setEditStartTime] = useState("");
+  const [editEndTime, setEditEndTime] = useState("");
+  const [editLocation, setEditLocation] = useState("");
+  const [editLoading, setEditLoading] = useState(false);
+  const [editError, setEditError] = useState("");
+  const [deleteLoadingId, setDeleteLoadingId] = useState<number | null>(null);
+
   const fetchStudents = async () => {
     try {
       const res = await api.get(`/groups/${id}/students`);
@@ -62,7 +93,99 @@ export default function GroupDetailPage() {
     }
   };
 
-  useEffect(() => { fetchStudents(); }, [id]);
+  const fetchLessons = async () => {
+    try {
+      const res = await api.get<Lesson[]>(`/groups/${id}/lessons`);
+      setLessons(res.data);
+    } catch {
+      setLessons([]);
+    }
+  };
+
+  useEffect(() => {
+    fetchStudents();
+    fetchLessons();
+    api.get<{ id: number }>("/auth/me").then((r) => setTeacherId(r.data.id)).catch(() => {});
+  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleCreateLesson = async () => {
+    if (!lessonDate) { setLessonError("Укажите дату мероприятия"); return; }
+    if (!teacherId) { setLessonError("Не удалось определить ID преподавателя"); return; }
+
+    const title = lessonTopic.trim() ? `${lessonType}: ${lessonTopic.trim()}` : lessonType;
+    const startsAt = `${lessonDate}T${lessonStartTime}:00`;
+    const endsAt = `${lessonDate}T${lessonEndTime}:00`;
+
+    try {
+      setLessonLoading(true);
+      setLessonError("");
+      setLessonSuccess("");
+      await api.post("/lessons/", {
+        group_id: Number(id),
+        teacher_id: teacherId,
+        title,
+        lesson_date: lessonDate,
+        starts_at: startsAt,
+        ends_at: endsAt,
+        location: lessonLocation.trim() || null,
+      });
+      setLessonSuccess("Мероприятие успешно создано");
+      setLessonTopic("");
+      setLessonDate("");
+      setLessonLocation("");
+      await fetchLessons();
+    } catch (err: any) {
+      setLessonError(err?.response?.data?.detail || "Не удалось создать мероприятие");
+    } finally {
+      setLessonLoading(false);
+    }
+  };
+
+  const startEditing = (lesson: Lesson) => {
+    setEditingLessonId(lesson.id);
+    setEditTitle(lesson.title);
+    setEditDate(lesson.lesson_date);
+    setEditStartTime(lesson.starts_at.slice(11, 16));
+    setEditEndTime(lesson.ends_at.slice(11, 16));
+    setEditLocation(lesson.location ?? "");
+    setEditError("");
+  };
+
+  const handleSaveEdit = async (lesson: Lesson) => {
+    if (!editDate) { setEditError("Укажите дату"); return; }
+    try {
+      setEditLoading(true);
+      setEditError("");
+      const startsAt = `${editDate}T${editStartTime}:00`;
+      const endsAt = `${editDate}T${editEndTime}:00`;
+      await api.put(`/lessons/${lesson.id}`, {
+        title: editTitle.trim() || lesson.title,
+        lesson_date: editDate,
+        starts_at: startsAt,
+        ends_at: endsAt,
+        location: editLocation.trim() || null,
+      });
+      setEditingLessonId(null);
+      await fetchLessons();
+    } catch (err: any) {
+      setEditError(err?.response?.data?.detail || "Не удалось сохранить изменения");
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
+  const handleDeleteLesson = async (lessonId: number) => {
+    if (!window.confirm("Удалить это мероприятие? Все связанные данные (посещаемость, метрики) будут удалены.")) return;
+    try {
+      setDeleteLoadingId(lessonId);
+      await api.delete(`/lessons/${lessonId}`);
+      await fetchLessons();
+    } catch (err: any) {
+      alert(err?.response?.data?.detail || "Не удалось удалить мероприятие");
+    } finally {
+      setDeleteLoadingId(null);
+    }
+  };
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
@@ -146,26 +269,50 @@ export default function GroupDetailPage() {
             {/* Info block */}
             <div style={infoBlockStyle}>
               <div style={infoBlockTitleStyle}>Требования к файлу</div>
-              <div style={columnsGridStyle}>
-                <div>
-                  <div style={infoLabelStyle}>Обязательные колонки:</div>
-                  <div style={codeListStyle}>
-                    {["full_name", "email", "date_of_birth", "group_name", "subject_name",
-                      "total_classes", "attended_classes", "excused_missed_classes", "average_score"
-                    ].map((col) => (
-                      <span key={col} style={codeTagStyle}>{col}</span>
-                    ))}
-                  </div>
+              <div style={{ marginBottom: 16 }}>
+                <div style={infoLabelStyle}>Описание обязательных колонок:</div>
+                <div style={tableWrapStyle}>
+                  <table style={tableStyle}>
+                    <thead>
+                      <tr>
+                        <th style={{ ...thStyle, width: "30%" }}>Колонка</th>
+                        <th style={thStyle}>Описание</th>
+                        <th style={{ ...thStyle, width: "28%" }}>Пример значения</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[
+                        { col: "full_name", desc: "Полное ФИО студента через пробел", example: "Иванов Иван Иванович" },
+                        { col: "email", desc: "Email студента — используется как логин в системе", example: "ivanov@example.com" },
+                        { col: "date_of_birth", desc: "Дата рождения в формате ДД.ММ.ГГГГ", example: "15.03.2002" },
+                        { col: "group_name", desc: "Название учебной группы (должно совпадать с группой)", example: "ИС-203" },
+                        { col: "subject_name", desc: "Название учебного предмета / дисциплины", example: "Математический анализ" },
+                        { col: "total_classes", desc: "Общее количество занятий по предмету за период", example: "32" },
+                        { col: "attended_classes", desc: "Сколько занятий студент фактически посетил", example: "28" },
+                        { col: "excused_missed_classes", desc: "Пропуски по уважительной причине (справка, приказ)", example: "3" },
+                        { col: "average_score", desc: "Средний балл студента по предмету (от 0 до 50)", example: "42.5" },
+                        { col: "event_type", desc: "Тип мероприятия — необязательно, автоматически создаёт занятие", example: "Зачёт / Экзамен" },
+                        { col: "event_name", desc: "Название мероприятия — если не указано, берётся subject_name", example: "Экзамен по математике" },
+                      ].map(({ col, desc, example }) => (
+                        <tr key={col}>
+                          <td style={tdStyle}><span style={codeTagStyle}>{col}</span></td>
+                          <td style={{ ...tdStyle, color: "#475569", fontSize: 13 }}>{desc}</td>
+                          <td style={{ ...tdStyle, color: "#64748b", fontSize: 13, fontStyle: "italic" }}>{example}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-                <div>
-                  <div style={infoLabelStyle}>При импорте система:</div>
-                  <ul style={checkListStyle}>
-                    <li>Создаёт новых студентов</li>
-                    <li>Добавляет их в текущую группу</li>
-                    <li>Сохраняет учебные показатели</li>
-                    <li>Отправляет логин и пароль на почту</li>
-                  </ul>
-                </div>
+              </div>
+              <div>
+                <div style={infoLabelStyle}>При импорте система:</div>
+                <ul style={checkListStyle}>
+                  <li>Создаёт новых студентов и аккаунты для входа</li>
+                  <li>Добавляет их в текущую группу</li>
+                  <li>Сохраняет академические показатели (посещаемость, баллы)</li>
+                  <li>Отправляет логин и пароль на указанный email</li>
+                  <li>Если указан <strong>event_type</strong> (Зачёт / Экзамен) — автоматически создаёт мероприятие в группе</li>
+                </ul>
               </div>
             </div>
 
@@ -259,6 +406,172 @@ export default function GroupDetailPage() {
                     </table>
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+
+          {/* Lesson creation card */}
+          <div style={cardStyle}>
+            <div style={cardHeaderRowStyle}>
+              <div style={lessonIconStyle}>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round">
+                  <rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
+                </svg>
+              </div>
+              <div>
+                <h2 style={sectionTitleStyle}>Создать мероприятие</h2>
+                <p style={sectionSubtitleStyle}>Добавьте учебное мероприятие для видеоанализа вовлечённости</p>
+              </div>
+            </div>
+
+            <div style={lessonFormGridStyle}>
+              <div>
+                <label style={fieldLabelStyle}>Тип мероприятия</label>
+                <select
+                  style={inputStyle}
+                  value={lessonType}
+                  onChange={(e: ChangeEvent<HTMLSelectElement>) => setLessonType(e.target.value)}
+                >
+                  <option value="Зачёт">Зачёт</option>
+                  <option value="Экзамен">Экзамен</option>
+                </select>
+              </div>
+              <div>
+                <label style={fieldLabelStyle}>Тема / предмет (необязательно)</label>
+                <input
+                  style={inputStyle}
+                  type="text"
+                  placeholder="Например, по математическому анализу"
+                  value={lessonTopic}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => setLessonTopic(e.target.value)}
+                />
+              </div>
+              <div>
+                <label style={fieldLabelStyle}>Дата</label>
+                <input style={inputStyle} type="date" value={lessonDate} onChange={(e: ChangeEvent<HTMLInputElement>) => setLessonDate(e.target.value)} />
+              </div>
+              <div>
+                <label style={fieldLabelStyle}>Начало</label>
+                <input style={inputStyle} type="time" value={lessonStartTime} onChange={(e: ChangeEvent<HTMLInputElement>) => setLessonStartTime(e.target.value)} />
+              </div>
+              <div>
+                <label style={fieldLabelStyle}>Конец</label>
+                <input style={inputStyle} type="time" value={lessonEndTime} onChange={(e: ChangeEvent<HTMLInputElement>) => setLessonEndTime(e.target.value)} />
+              </div>
+              <div>
+                <label style={fieldLabelStyle}>Аудитория (необязательно)</label>
+                <input style={inputStyle} type="text" placeholder="Например, 301-А" value={lessonLocation} onChange={(e: ChangeEvent<HTMLInputElement>) => setLessonLocation(e.target.value)} />
+              </div>
+            </div>
+
+            <div style={{ marginTop: 16 }}>
+              <button onClick={handleCreateLesson} disabled={lessonLoading} style={lessonBtnStyle}>
+                {lessonLoading ? "Создание..." : "Создать мероприятие"}
+              </button>
+            </div>
+
+            {lessonError && <div style={inlineErrorStyle}>{lessonError}</div>}
+            {lessonSuccess && <div style={inlineSuccessStyle}>{lessonSuccess}</div>}
+
+            {lessons.length > 0 && (
+              <div style={{ marginTop: 20 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#374151", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                  Мероприятия группы ({lessons.length})
+                </div>
+                {editError && <div style={{ ...inlineErrorStyle, marginBottom: 10 }}>{editError}</div>}
+                <div style={tableWrapStyle}>
+                  <table style={tableStyle}>
+                    <thead>
+                      <tr>
+                        <th style={{ ...thStyle, width: 48 }}>ID</th>
+                        <th style={thStyle}>Название</th>
+                        <th style={thStyle}>Дата</th>
+                        <th style={thStyle}>Время</th>
+                        <th style={thStyle}>Аудитория</th>
+                        <th style={{ ...thStyle, width: 140 }}>Действия</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lessons.map((lesson) =>
+                        editingLessonId === lesson.id ? (
+                          <tr key={lesson.id} style={{ background: "#f0f7ff" }}>
+                            <td style={{ ...tdStyle, color: "#94a3b8", fontWeight: 700 }}>#{lesson.id}</td>
+                            <td style={tdStyle}>
+                              <input
+                                style={{ ...editInputStyle, width: "100%" }}
+                                value={editTitle}
+                                onChange={(e) => setEditTitle(e.target.value)}
+                              />
+                            </td>
+                            <td style={tdStyle}>
+                              <input
+                                style={editInputStyle}
+                                type="date"
+                                value={editDate}
+                                onChange={(e) => setEditDate(e.target.value)}
+                              />
+                            </td>
+                            <td style={tdStyle}>
+                              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                                <input style={{ ...editInputStyle, width: 80 }} type="time" value={editStartTime} onChange={(e) => setEditStartTime(e.target.value)} />
+                                <span style={{ color: "#94a3b8" }}>—</span>
+                                <input style={{ ...editInputStyle, width: 80 }} type="time" value={editEndTime} onChange={(e) => setEditEndTime(e.target.value)} />
+                              </div>
+                            </td>
+                            <td style={tdStyle}>
+                              <input
+                                style={editInputStyle}
+                                type="text"
+                                placeholder="Аудитория"
+                                value={editLocation}
+                                onChange={(e) => setEditLocation(e.target.value)}
+                              />
+                            </td>
+                            <td style={tdStyle}>
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <button
+                                  onClick={() => handleSaveEdit(lesson)}
+                                  disabled={editLoading}
+                                  style={saveBtnStyle}
+                                >
+                                  {editLoading ? "..." : "Сохранить"}
+                                </button>
+                                <button
+                                  onClick={() => setEditingLessonId(null)}
+                                  style={cancelBtnStyle}
+                                >
+                                  Отмена
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ) : (
+                          <tr key={lesson.id}>
+                            <td style={{ ...tdStyle, color: "#94a3b8", fontWeight: 700 }}>#{lesson.id}</td>
+                            <td style={{ ...tdStyle, fontWeight: 600 }}>{lesson.title}</td>
+                            <td style={tdStyle}>{new Date(lesson.lesson_date).toLocaleDateString("ru-RU")}</td>
+                            <td style={{ ...tdStyle, color: "#64748b" }}>
+                              {lesson.starts_at.slice(11, 16)} — {lesson.ends_at.slice(11, 16)}
+                            </td>
+                            <td style={{ ...tdStyle, color: "#64748b" }}>{lesson.location ?? "—"}</td>
+                            <td style={tdStyle}>
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <button onClick={() => startEditing(lesson)} style={editBtnStyle}>Изменить</button>
+                                <button
+                                  onClick={() => handleDeleteLesson(lesson.id)}
+                                  disabled={deleteLoadingId === lesson.id}
+                                  style={deleteBtnStyle}
+                                >
+                                  {deleteLoadingId === lesson.id ? "..." : "Удалить"}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>
@@ -379,9 +692,6 @@ const infoBlockTitleStyle: CSSProperties = {
   fontSize: 12, fontWeight: 700, color: "#475569",
   textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12,
 };
-const columnsGridStyle: CSSProperties = {
-  display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20,
-};
 const infoLabelStyle: CSSProperties = {
   fontSize: 12, color: "#64748b", marginBottom: 8, fontWeight: 600,
 };
@@ -476,4 +786,56 @@ const badgeBlueStyle: CSSProperties = {
   display: "inline-flex", padding: "3px 10px",
   borderRadius: 999, fontSize: 12, fontWeight: 600,
   background: "#dbeafe", color: "#1d4ed8",
+};
+
+const lessonIconStyle: CSSProperties = {
+  width: 50, height: 50, borderRadius: 14, flexShrink: 0,
+  background: "linear-gradient(135deg, #2563eb, #6366f1)",
+  display: "flex", alignItems: "center", justifyContent: "center",
+  boxShadow: "0 4px 12px rgba(37,99,235,0.28)",
+};
+const lessonFormGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+  gap: 14,
+};
+const fieldLabelStyle: CSSProperties = {
+  display: "block", fontSize: 13, fontWeight: 600, color: "#374151", marginBottom: 6,
+};
+const inputStyle: CSSProperties = {
+  width: "100%", padding: "11px 14px", border: "1.5px solid #e2e8f0",
+  borderRadius: 12, fontSize: 14, color: "#0f172a", background: "#f8fafc",
+  boxSizing: "border-box",
+};
+const lessonBtnStyle: CSSProperties = {
+  padding: "11px 22px", borderRadius: 12, border: "none",
+  background: "linear-gradient(135deg, #2563eb, #3b82f6)",
+  color: "white", fontWeight: 700, fontSize: 14, cursor: "pointer",
+  boxShadow: "0 3px 10px rgba(37,99,235,0.28)",
+};
+const inlineSuccessStyle: CSSProperties = {
+  marginTop: 12, padding: "10px 14px", borderRadius: 10,
+  background: "#f0fdf4", border: "1px solid #bbf7d0", color: "#16a34a", fontSize: 13, fontWeight: 600,
+};
+const editBtnStyle: CSSProperties = {
+  padding: "4px 12px", borderRadius: 8, border: "1.5px solid #dbeafe",
+  background: "#eff6ff", color: "#2563eb", fontSize: 12, fontWeight: 600, cursor: "pointer",
+};
+const deleteBtnStyle: CSSProperties = {
+  padding: "4px 12px", borderRadius: 8, border: "1.5px solid #fecaca",
+  background: "#fef2f2", color: "#dc2626", fontSize: 12, fontWeight: 600, cursor: "pointer",
+};
+const saveBtnStyle: CSSProperties = {
+  padding: "4px 12px", borderRadius: 8, border: "none",
+  background: "linear-gradient(135deg, #059669, #10b981)",
+  color: "white", fontSize: 12, fontWeight: 700, cursor: "pointer",
+};
+const cancelBtnStyle: CSSProperties = {
+  padding: "4px 12px", borderRadius: 8, border: "1.5px solid #e2e8f0",
+  background: "#f8fafc", color: "#64748b", fontSize: 12, fontWeight: 600, cursor: "pointer",
+};
+const editInputStyle: CSSProperties = {
+  padding: "5px 10px", border: "1.5px solid #cbd5e1",
+  borderRadius: 8, fontSize: 13, color: "#0f172a", background: "white",
+  boxSizing: "border-box",
 };

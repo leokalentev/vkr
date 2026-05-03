@@ -15,7 +15,7 @@ class HeadPoseAnalyzer:
     left_eye, right_eye, nose, left_mouth, right_mouth
     """
 
-    def __init__(self, forward_threshold: float = 0.10):
+    def __init__(self, forward_threshold: float = 0.15):
         self.forward_threshold = forward_threshold
 
     def analyze_from_kps(self, kps) -> HeadPoseResult | None:

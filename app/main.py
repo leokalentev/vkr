@@ -16,7 +16,8 @@ from app.auth import (
 )
 from app.security import hash_password
 from app.import_utils import read_students_excel, read_academic_snapshots_excel
-from app.email_utils import send_student_credentials_email
+from app.email_utils import send_student_credentials_email, send_student_report_email
+from app.fuzzy_recommendations import get_hobby_recommendations, ALL_TRAITS
 from cv_module.service import analyze_video_file
 from cv_module.config import TEMPLATES_DIR
 
@@ -70,8 +71,21 @@ def create_user(
     if existing_user:
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    password_hash = hash_password(user.password)
-    return crud.create_user(db, user, password_hash)
+    plain_password = user.password if user.password else generate_student_password()
+    password_hash = hash_password(plain_password)
+    db_user = crud.create_user(db, user, password_hash)
+
+    try:
+        send_student_credentials_email(
+            to_email=user.email,
+            full_name=f"{user.last_name} {user.first_name}",
+            login=user.email,
+            password=plain_password,
+        )
+    except Exception:
+        pass
+
+    return db_user
 
 
 @app.get("/users/", response_model=list[schemas.UserRead])
@@ -120,6 +134,33 @@ def read_groups(
     current_user: models.User = Depends(get_current_active_user),
 ):
     return crud.get_groups(db)
+
+
+@app.patch("/groups/{group_id}", response_model=schemas.GroupRead)
+def update_group(
+    group_id: int,
+    data: schemas.GroupUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
+    ),
+):
+    group = crud.update_group(db, group_id, data)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return group
+
+
+@app.delete("/groups/{group_id}", status_code=204)
+def delete_group(
+    group_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
+    ),
+):
+    if not crud.delete_group(db, group_id):
+        raise HTTPException(status_code=404, detail="Group not found")
 
 
 # =========================
@@ -416,6 +457,18 @@ def read_lessons(
     return crud.get_lessons(db)
 
 
+@app.get("/groups/{group_id}/lessons", response_model=list[schemas.LessonShortRead])
+def get_group_lessons(
+    group_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+):
+    group = crud.get_group_by_id(db, group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return crud.get_lessons_by_group(db, group_id)
+
+
 @app.get("/students/{student_id}/lessons", response_model=list[schemas.LessonShortRead])
 def get_student_lessons(
     student_id: int,
@@ -430,6 +483,40 @@ def get_student_lessons(
         raise HTTPException(status_code=400, detail="Specified user is not a student")
 
     return crud.get_lessons_by_student(db, student_id)
+
+
+@app.put("/lessons/{lesson_id}", response_model=schemas.LessonShortRead)
+def update_lesson(
+    lesson_id: int,
+    data: schemas.LessonUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
+    ),
+):
+    lesson = crud.get_lesson_by_id(db, lesson_id)
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    if current_user.role == models.UserRole.TEACHER and lesson.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Teacher can edit only their own lessons")
+    updated = crud.update_lesson(db, lesson_id, data)
+    return updated
+
+
+@app.delete("/lessons/{lesson_id}", status_code=204)
+def delete_lesson(
+    lesson_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
+    ),
+):
+    lesson = crud.get_lesson_by_id(db, lesson_id)
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    if current_user.role == models.UserRole.TEACHER and lesson.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Teacher can delete only their own lessons")
+    crud.delete_lesson(db, lesson_id)
 
 
 # =========================
@@ -855,6 +942,89 @@ def get_student_results(
 
     return crud.get_results_by_student(db, student_id)
 
+
+@app.get("/students/{student_id}/academic-snapshots", response_model=list[schemas.StudentAcademicSnapshotRead])
+def get_student_academic_snapshots(
+    student_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+):
+    student = crud.get_user_by_id(db, student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    return crud.get_snapshots_by_student(db, student_id)
+
+
+@app.post("/students/{student_id}/send-report", status_code=200)
+def send_student_report(
+    student_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
+    ),
+):
+    student = crud.get_user_by_id(db, student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    attendance_records = crud.get_attendance_by_student(db, student_id)
+    attended = sum(1 for a in attendance_records if a.status.lower() in ("present", "late"))
+    total_att = len(attendance_records)
+    att_pct = (attended / total_att * 100) if total_att > 0 else None
+
+    snapshots = crud.get_snapshots_by_student(db, student_id)
+    journal_score: float | None = None
+    if snapshots:
+        journal_score = sum(s.average_score for s in snapshots) / len(snapshots)
+
+    results = crud.get_results_by_student(db, student_id)
+    exam_score: float | None = None
+    if results:
+        exam_score = sum(r.score for r in results if r.score is not None) / len(results)
+
+    total_score: float | None = None
+    if journal_score is not None and exam_score is not None:
+        total_score = journal_score + exam_score
+    elif journal_score is not None:
+        total_score = journal_score
+
+    teacher_name = f"{current_user.last_name} {current_user.first_name}"
+
+    try:
+        send_student_report_email(
+            to_email=student.email,
+            full_name=f"{student.last_name} {student.first_name}",
+            attendance_attended=attended,
+            attendance_total=total_att,
+            attendance_pct=att_pct,
+            journal_score=journal_score,
+            exam_score=exam_score,
+            total_score=total_score,
+            teacher_name=teacher_name,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Не удалось отправить письмо: {e}")
+
+    return {"detail": "Отчёт успешно отправлен на почту студента"}
+
+
+@app.post("/students/{student_id}/hobby-recommendations")
+def hobby_recommendations(
+    student_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+):
+    traits: list[str] = body.get("traits", [])
+    if len(traits) < 1:
+        raise HTTPException(status_code=400, detail="Укажите хотя бы одну черту характера")
+    if len(traits) > 10:
+        raise HTTPException(status_code=400, detail="Можно выбрать не более 10 черт")
+
+    recs = get_hobby_recommendations(traits)
+    return {"recommendations": recs, "all_traits": ALL_TRAITS}
+
+
 @app.post(
     "/groups/{group_id}/import-academic-snapshots",
     response_model=schemas.AcademicSnapshotImportResponse,
@@ -945,6 +1115,18 @@ def import_academic_snapshots_to_group(
                 average_score=row["average_score"],
             )
         )
+
+        # Auto-create lesson when event_type (Зачёт/Экзамен) is specified in Excel
+        event_type = row.get("event_type")
+        event_name = row.get("event_name") or row["subject_name"]
+        if event_type in ("Зачёт", "Экзамен"):
+            crud.find_or_create_lesson_from_import(
+                db=db,
+                group_id=group.id,
+                teacher_id=current_user.id,
+                event_name=event_name,
+                event_type=event_type,
+            )
 
         if created_now and plain_password:
             full_name = f"{student.last_name} {student.first_name}"

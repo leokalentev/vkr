@@ -73,6 +73,8 @@ def read_academic_snapshots_excel(file_bytes: bytes) -> list[dict]:
 
     df.columns = [str(col).strip().lower() for col in df.columns]
 
+    VALID_EVENT_TYPES = {"Зачёт", "Экзамен"}
+
     required_columns = {
         "full_name",
         "email",
@@ -148,6 +150,25 @@ def read_academic_snapshots_excel(file_bytes: bytes) -> list[dict]:
             if average_score < 0 or average_score > 50:
                 raise ValueError("average_score должен быть в диапазоне 0..50")
 
+            # Optional event columns
+            event_type: Optional[str] = None
+            event_name: Optional[str] = None
+
+            if "event_type" in df.columns:
+                raw_et = row["event_type"]
+                if pd.notna(raw_et):
+                    event_type = str(raw_et).strip()
+                    if event_type and event_type not in VALID_EVENT_TYPES:
+                        raise ValueError(
+                            f"event_type должен быть одним из: {', '.join(VALID_EVENT_TYPES)}, "
+                            f"получено: '{event_type}'"
+                        )
+
+            if "event_name" in df.columns:
+                raw_en = row["event_name"]
+                if pd.notna(raw_en):
+                    event_name = str(raw_en).strip() or None
+
             rows.append(
                 {
                     "email": email,
@@ -162,6 +183,8 @@ def read_academic_snapshots_excel(file_bytes: bytes) -> list[dict]:
                     "excused_missed_classes": excused_missed_classes,
                     "average_score": average_score,
                     "full_name": full_name,
+                    "event_type": event_type,
+                    "event_name": event_name,
                 }
             )
         except Exception as e:

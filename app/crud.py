@@ -1,3 +1,5 @@
+from datetime import date, datetime, timezone
+
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
@@ -70,6 +72,28 @@ def get_group_by_id(db: Session, group_id: int):
     return db.query(models.Group).filter(models.Group.id == group_id).first()
 
 
+def update_group(db: Session, group_id: int, data: schemas.GroupUpdate):
+    group = get_group_by_id(db, group_id)
+    if not group:
+        return None
+    if data.name is not None:
+        group.name = data.name
+    if "curator_id" in data.model_fields_set:
+        group.curator_id = data.curator_id
+    db.commit()
+    db.refresh(group)
+    return group
+
+
+def delete_group(db: Session, group_id: int) -> bool:
+    group = get_group_by_id(db, group_id)
+    if not group:
+        return False
+    db.delete(group)
+    db.commit()
+    return True
+
+
 def create_lesson(db: Session, lesson: schemas.LessonCreate):
     db_lesson = models.Lesson(
         group_id=lesson.group_id,
@@ -87,12 +111,71 @@ def create_lesson(db: Session, lesson: schemas.LessonCreate):
     return db_lesson
 
 
+def find_or_create_lesson_from_import(
+    db: Session,
+    group_id: int,
+    teacher_id: int,
+    event_name: str,
+    event_type: str,
+) -> models.Lesson:
+    """Find an existing lesson by title+group or create a new one automatically."""
+    existing = (
+        db.query(models.Lesson)
+        .filter(
+            models.Lesson.group_id == group_id,
+            models.Lesson.title == event_name,
+        )
+        .first()
+    )
+    if existing:
+        return existing
+
+    today = date.today()
+    starts_at = datetime(today.year, today.month, today.day, 9, 0, 0, tzinfo=timezone.utc)
+    ends_at   = datetime(today.year, today.month, today.day, 10, 30, 0, tzinfo=timezone.utc)
+
+    lesson = models.Lesson(
+        group_id=group_id,
+        teacher_id=teacher_id,
+        title=event_name,
+        lesson_date=today,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        location=None,
+        description=f"Создано автоматически при импорте журнала · {event_type}",
+    )
+    db.add(lesson)
+    db.commit()
+    db.refresh(lesson)
+    return lesson
+
+
 def get_lessons(db: Session):
     return db.query(models.Lesson).all()
 
 
 def get_lesson_by_id(db: Session, lesson_id: int):
     return db.query(models.Lesson).filter(models.Lesson.id == lesson_id).first()
+
+
+def update_lesson(db: Session, lesson_id: int, data: schemas.LessonUpdate):
+    lesson = get_lesson_by_id(db, lesson_id)
+    if not lesson:
+        return None
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(lesson, field, value)
+    db.commit()
+    db.refresh(lesson)
+    return lesson
+
+
+def delete_lesson(db: Session, lesson_id: int) -> bool:
+    lesson = get_lesson_by_id(db, lesson_id)
+    if not lesson:
+        return False
+    db.delete(lesson)
+    db.commit()
+    return True
 
 
 def get_lessons_by_group(db: Session, group_id: int):
@@ -339,6 +422,15 @@ def get_results_by_student(db: Session, student_id: int):
     )
 
 
+def get_snapshots_by_student(db: Session, student_id: int):
+    return (
+        db.query(models.StudentAcademicSnapshot)
+        .filter(models.StudentAcademicSnapshot.student_id == student_id)
+        .order_by(models.StudentAcademicSnapshot.imported_at.desc())
+        .all()
+    )
+
+
 def get_engagement_metric(db: Session, lesson_id: int, student_id: int):
     return (
         db.query(models.EngagementMetric)
@@ -391,19 +483,18 @@ def calculate_engagement_index(
 ):
     motion_activity_score = transform_motion_for_engagement(metric_data.motion_level)
 
+    # face_match_confidence excluded from weighted sum — used as quality multiplier below
     base_weights = {
-        "presence_ratio": 0.10,
-        "face_match_confidence": 0.20,
-        "head_pose_forward_ratio": 0.20,
-        "head_pose_variance_transformed": 0.10,
-        "motion_activity_score": 0.20,
+        "presence_ratio": 0.25,
+        "head_pose_forward_ratio": 0.30,
+        "head_pose_variance_transformed": 0.20,
+        "motion_activity_score": 0.10,
         "frame_stability": 0.10,
-        "grade_score": 0.10,
+        "grade_score": 0.05,
     }
 
     transformed_values = {
         "presence_ratio": metric_data.presence_ratio,
-        "face_match_confidence": metric_data.face_match_confidence,
         "head_pose_forward_ratio": metric_data.head_pose_forward_ratio,
         "head_pose_variance_transformed": round(1 - metric_data.head_pose_variance, 4),
         "motion_activity_score": motion_activity_score,
@@ -428,46 +519,55 @@ def calculate_engagement_index(
         engagement_index += float(transformed_values[key]) * weight
 
     # =========================
+    # МУЛЬТИПЛИКАТОР КАЧЕСТВА ИДЕНТИФИКАЦИИ
+    # =========================
+    # face_match_confidence — это уверенность в распознавании личности,
+    # а не поведенческий признак вовлечённости. Используем как
+    # доверительный коэффициент: чем хуже совпадение, тем ниже доверие к метрикам.
+
+    face_conf = metric_data.face_match_confidence
+    quality_multiplier = 1.0
+    quality_note = "full_confidence"
+
+    if face_conf is not None:
+        if face_conf >= 0.70:
+            quality_multiplier = 1.0
+            quality_note = "high_confidence"
+        elif face_conf >= 0.55:
+            quality_multiplier = 0.92
+            quality_note = "medium_confidence_0_92"
+        elif face_conf >= 0.40:
+            quality_multiplier = 0.80
+            quality_note = "low_confidence_0_80"
+        else:
+            quality_multiplier = 0.65
+            quality_note = "very_low_confidence_0_65"
+
+    engagement_index *= quality_multiplier
+
+    # =========================
     # ШТРАФЫ И КОРРЕКЦИИ
     # =========================
 
     penalties = []
 
-    face_conf = metric_data.face_match_confidence
     presence_ratio = metric_data.presence_ratio
     head_forward = metric_data.head_pose_forward_ratio
     motion_level = metric_data.motion_level
     frame_stability = metric_data.frame_stability
 
-    # 1. Если лицо плохо распознано — сильно режем итог
-    if face_conf is not None:
-        if face_conf < 0.60:
-            engagement_index *= 0.80
-            penalties.append("low_face_match_confidence_penalty_0_80")
-
-        if face_conf < 0.45:
-            engagement_index *= 0.75
-            penalties.append("very_low_face_match_confidence_penalty_0_75")
-
-        if face_conf < 0.35:
-            engagement_index *= 0.70
-            penalties.append("critical_face_match_confidence_penalty_0_70")
-
-    # 2. Если присутствие в кадре есть, но личность не подтверждается,
-    # нельзя давать высокий индекс вовлечённости
-    if presence_ratio >= 0.85 and (face_conf is None or face_conf < 0.50):
+    # Присутствие подтверждено, но личность не идентифицирована — ограничиваем потолок
+    if presence_ratio >= 0.85 and (face_conf is None or face_conf < 0.45):
         engagement_index = min(engagement_index, 0.55)
         penalties.append("presence_without_identity_cap_0_55")
 
-    # 3. Если активность почти нулевая и лицо распознаётся плохо,
-    # это подозрительная ситуация: закрытое лицо, статичность, слабое подтверждение личности
-    if motion_level < 0.02 and frame_stability > 0.95 and (face_conf is None or face_conf < 0.50):
-        engagement_index = min(engagement_index, 0.50)
-        penalties.append("static_low_identity_cap_0_50")
+    # Нулевая активность + слабое распознавание: статичная сцена без подтверждения студента
+    if motion_level < 0.02 and frame_stability > 0.95 and (face_conf is None or face_conf < 0.45):
+        engagement_index = min(engagement_index, 0.45)
+        penalties.append("static_low_identity_cap_0_45")
 
-    # 4. Если лицо плохо распознано, но head pose идеальный,
-    # не даём системе переоценивать такую ситуацию
-    if head_forward > 0.90 and (face_conf is None or face_conf < 0.50):
+    # Идеальная поза головы без идентификации — не переоцениваем
+    if head_forward > 0.90 and (face_conf is None or face_conf < 0.45):
         engagement_index = min(engagement_index, 0.60)
         penalties.append("head_pose_without_identity_cap_0_60")
 
@@ -488,10 +588,13 @@ def calculate_engagement_index(
         "transformed_values": transformed_values,
         "derived_values": {
             "motion_activity_score": motion_activity_score,
+            "quality_multiplier": quality_multiplier,
+            "quality_note": quality_note,
         },
         "notes": {
             "head_pose_variance_rule": "engagement uses 1 - head_pose_variance",
             "motion_activity_rule": "moderate motion is better than too low or too high",
+            "face_conf_rule": "face_match_confidence is identity quality multiplier, not a behavioral weight",
             "grade_score_source": "request_or_assessment_result",
         },
         "penalties_applied": penalties,
@@ -502,25 +605,25 @@ def calculate_engagement_index(
 def transform_motion_for_engagement(motion_level: float) -> float:
     """
     Преобразует уровень движения в оценку вовлечённости.
-    Слишком низкая активность -> подозрительно пассивное поведение.
-    Умеренная активность -> лучший диапазон.
-    Слишком высокая активность -> тоже снижает оценку.
+    Слишком низкая активность — пассивное/спящее поведение.
+    Умеренная активность (записи, жесты) — оптимальный диапазон.
+    Слишком высокая активность — отвлечённость.
     """
 
     motion = float(motion_level)
 
     if motion <= 0.02:
-        return 0.20
+        return 0.15                                      # почти статичный — подозрительно
     if motion <= 0.05:
-        return 0.20 + (motion - 0.02) / 0.03 * 0.30   # 0.20 -> 0.50
-    if motion <= 0.15:
-        return 0.50 + (motion - 0.05) / 0.10 * 0.45   # 0.50 -> 0.95
-    if motion <= 0.30:
-        return 0.95 - (motion - 0.15) / 0.15 * 0.20   # 0.95 -> 0.75
-    if motion <= 0.50:
-        return 0.75 - (motion - 0.30) / 0.20 * 0.25   # 0.75 -> 0.50
+        return 0.15 + (motion - 0.02) / 0.03 * 0.35    # 0.15 -> 0.50
+    if motion <= 0.20:
+        return 0.50 + (motion - 0.05) / 0.15 * 0.50    # 0.50 -> 1.00
+    if motion <= 0.35:
+        return 1.00 - (motion - 0.20) / 0.15 * 0.30    # 1.00 -> 0.70
+    if motion <= 0.55:
+        return 0.70 - (motion - 0.35) / 0.20 * 0.35    # 0.70 -> 0.35
 
-    return 0.40
+    return 0.20                                          # чрезмерное движение
 
 
 def create_or_update_engagement_metric(
@@ -609,11 +712,11 @@ def normalize_assessment_result(result: models.AssessmentResult):
 def determine_engagement_level(score: float | None):
     if score is None:
         return "insufficient_data"
-    if score >= 0.85:
+    if score >= 0.75:
         return "high"
-    if score >= 0.70:
+    if score >= 0.55:
         return "good"
-    if score >= 0.50:
+    if score >= 0.33:
         return "medium"
     return "low"
 

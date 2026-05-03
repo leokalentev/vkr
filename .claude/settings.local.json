@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/Леонид/Downloads/**)",
+      "Bash(python -c ' *)"
+    ]
+  }
+}

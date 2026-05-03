@@ -99,7 +99,6 @@ export default function Sidebar({ title, links, width }: Props) {
             </div>
             <div>
               <div style={brandTitleStyle}>{title}</div>
-              <div style={brandSubtitleStyle}>Engagement Analytics</div>
             </div>
           </div>
 
@@ -133,10 +132,7 @@ export default function Sidebar({ title, links, width }: Props) {
         <div style={footerCardStyle}>
           <div style={footerDotStyle} />
           <div>
-            <div style={footerTitleStyle}>Student Insight</div>
-            <div style={footerTextStyle}>
-              Аналитика вовлечённости
-            </div>
+            <div style={footerTitleStyle}>Аналитика вовлечённости</div>
           </div>
         </div>
       </div>
@@ -189,13 +185,6 @@ const brandTitleStyle: CSSProperties = {
   fontWeight: 800,
   color: "#ffffff",
   lineHeight: 1.2,
-};
-
-const brandSubtitleStyle: CSSProperties = {
-  fontSize: 11,
-  color: "#64748b",
-  marginTop: 2,
-  letterSpacing: "0.3px",
 };
 
 const dividerStyle: CSSProperties = {
@@ -272,8 +261,3 @@ const footerTitleStyle: CSSProperties = {
   fontSize: 13,
 };
 
-const footerTextStyle: CSSProperties = {
-  color: "#64748b",
-  fontSize: 11,
-  marginTop: 2,
-};

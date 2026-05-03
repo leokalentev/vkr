@@ -28,7 +28,7 @@ DEFAULT_TEMPLATE_PATH = TEMPLATES_DIR / "student_3.jpg"
 
 # Было 5 / 200, это всё ещё тяжело для CPU.
 FRAME_STRIDE = 12
-MAX_FRAMES = 40
+MAX_FRAMES = 60
 
 # Максимальная ширина кадра перед face detection
 MAX_FRAME_WIDTH = 640
@@ -56,7 +56,7 @@ INSIGHTFACE_DET_SIZE = (320, 320)
 # =========================
 
 FACE_DET_THRESHOLD = 0.5
-FACE_MATCH_THRESHOLD = 0.35
+FACE_MATCH_THRESHOLD = 0.40
 
 
 # =========================

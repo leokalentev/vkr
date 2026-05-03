@@ -19,7 +19,7 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
-    password: str
+    password: Optional[str] = None
 
 
 class UserRead(UserBase):
@@ -61,6 +61,11 @@ class GroupBase(BaseModel):
 
 
 class GroupCreate(GroupBase):
+    curator_id: Optional[int] = None
+
+
+class GroupUpdate(BaseModel):
+    name: Optional[str] = None
     curator_id: Optional[int] = None
 
 
@@ -354,6 +359,15 @@ class VideoAnalysisResponse(BaseModel):
     attendance: AttendanceRead
     engagement_metric: EngagementMetricRead
     meta: VideoAnalysisMeta
+
+
+class LessonUpdate(BaseModel):
+    title: Optional[str] = None
+    lesson_date: Optional[date] = None
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+    location: Optional[str] = None
+    description: Optional[str] = None
 
 
 class LessonShortRead(BaseModel):

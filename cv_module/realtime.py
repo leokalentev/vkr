@@ -16,7 +16,11 @@ from cv_module.service import resize_frame_if_needed
 
 
 def decode_frame(frame_bytes: bytes) -> Optional[np.ndarray]:
+    if not frame_bytes:
+        return None
     arr = np.frombuffer(frame_bytes, np.uint8)
+    if arr.size == 0:
+        return None
     frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     return frame if frame is not None and frame.size > 0 else None
 

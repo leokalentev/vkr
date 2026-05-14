@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Read(//c/Users/Леонид/Downloads/**)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import openpyxl; print\\('openpyxl ok'\\)\")",
+      "Bash(py -3 -c \"import openpyxl; print\\('openpyxl ok'\\)\")",
+      "Bash(pip install *)",
+      "Bash(python -m pip install openpyxl -q)",
+      "Bash(npx tsc *)"
     ]
   }
 }

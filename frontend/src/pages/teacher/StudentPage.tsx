@@ -116,10 +116,9 @@ function MetricCard({ label, value, digits = 4, hint }: { label: string; value: 
 export default function StudentPage() {
   const { id } = useParams();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const templateInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordedChunksRef = useRef<Blob[]>([]);
 
   // Visualization overlay
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -141,20 +140,31 @@ export default function StudentPage() {
 
   const [selectedLessonId, setSelectedLessonId] = useState("");
   const [lessonAlreadyAnalyzed, setLessonAlreadyAnalyzed] = useState(false);
-  const [selectedVideo, setSelectedVideo] = useState<File | null>(null);
+
+  // Face template
+  const [templateHasPhoto, setTemplateHasPhoto] = useState<boolean | null>(null); // null = loading
+  const [templateUploadedAt, setTemplateUploadedAt] = useState<string | null>(null);
+  const [templateFile, setTemplateFile] = useState<File | null>(null);
+  const [templatePreview, setTemplatePreview] = useState<string | null>(null);
+  const [templateUploading, setTemplateUploading] = useState(false);
+  const [templateError, setTemplateError] = useState("");
+  const [templateSuccess, setTemplateSuccess] = useState("");
+
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
   const [analysisSuccess, setAnalysisSuccess] = useState("");
   const [analysisResult, setAnalysisResult] = useState<VideoAnalysisResponse | null>(null);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
 
   const [cameraEnabled, setCameraEnabled] = useState(false);
   const [cameraError, setCameraError] = useState("");
-  const [recording, setRecording] = useState(false);
-  const [recordingSeconds, setRecordingSeconds] = useState(0);
-  const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
-  const [recordedFileName, setRecordedFileName] = useState("");
+  const [monitoring, setMonitoring] = useState(false);
+  const [sessionStarting, setSessionStarting] = useState(false);  // идёт start-session
+  const [monitoringSeconds, setMonitoringSeconds] = useState(0);
+  const [liveFrameCount, setLiveFrameCount] = useState(0);
+  const [liveFaceDetected, setLiveFaceDetected] = useState(false);
+  const [liveSessionId, setLiveSessionId] = useState("");
+  const frameIntervalRef = useRef<number | null>(null);
 
   // Send report
   const [sendLoading, setSendLoading] = useState(false);
@@ -169,19 +179,14 @@ export default function StudentPage() {
   const [gradeError, setGradeError] = useState("");
   const [gradeSuccess, setGradeSuccess] = useState("");
 
-  useEffect(() => {
-    if (!analysisLoading) return;
-    const t = window.setInterval(() => setElapsedSeconds((p) => p + 1), 1000);
-    return () => window.clearInterval(t);
-  }, [analysisLoading]);
 
   useEffect(() => {
-    if (!recording) return;
-    const t = window.setInterval(() => setRecordingSeconds((p) => p + 1), 1000);
+    if (!monitoring) return;
+    const t = window.setInterval(() => setMonitoringSeconds((p) => p + 1), 1000);
     return () => window.clearInterval(t);
-  }, [recording]);
+  }, [monitoring]);
 
-  useEffect(() => { isRecordingRef.current = recording; }, [recording]);
+  useEffect(() => { isRecordingRef.current = monitoring; }, [monitoring]);
   useEffect(() => { return () => { stopVisualization(); stopCameraTracks(); }; }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadLessons = async () => {
@@ -217,6 +222,50 @@ export default function StudentPage() {
 
   useEffect(() => { loadAll(); }, [id]);// eslint-disable-line react-hooks/exhaustive-deps
 
+  // Загружаем статус шаблона лица
+  useEffect(() => {
+    if (!id) return;
+    setTemplateHasPhoto(null);
+    api.get<{ has_template: boolean; uploaded_at: string | null }>(`/students/${id}/face-template/status`)
+      .then((res) => { setTemplateHasPhoto(res.data.has_template); setTemplateUploadedAt(res.data.uploaded_at); })
+      .catch(() => { setTemplateHasPhoto(false); });
+  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleTemplateFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    setTemplateFile(file);
+    setTemplateError("");
+    setTemplateSuccess("");
+    if (file) {
+      const url = URL.createObjectURL(file);
+      setTemplatePreview(url);
+    } else {
+      setTemplatePreview(null);
+    }
+  };
+
+  const handleUploadTemplate = async () => {
+    if (!id || !templateFile) return;
+    setTemplateUploading(true);
+    setTemplateError("");
+    setTemplateSuccess("");
+    try {
+      const fd = new FormData();
+      fd.append("photo", templateFile);
+      await api.post(`/students/${id}/face-template`, fd);
+      setTemplateHasPhoto(true);
+      setTemplateUploadedAt(new Date().toISOString());
+      setTemplateSuccess("Шаблон лица успешно сохранён");
+      setTemplateFile(null);
+      setTemplatePreview(null);
+      if (templateInputRef.current) templateInputRef.current.value = "";
+    } catch (err: any) {
+      setTemplateError(err?.response?.data?.detail || "Не удалось загрузить фото");
+    } finally {
+      setTemplateUploading(false);
+    }
+  };
+
   // Check if the selected lesson has already been analyzed for this student
   useEffect(() => {
     if (!selectedLessonId || !id) { setLessonAlreadyAnalyzed(false); return; }
@@ -228,9 +277,6 @@ export default function StudentPage() {
       .catch(() => setLessonAlreadyAnalyzed(false));
   }, [selectedLessonId, id]);
 
-  const handleVideoChange = (e: ChangeEvent<HTMLInputElement>) => {
-    setSelectedVideo(e.target.files?.[0] ?? null); setRecordedBlob(null); setRecordedFileName(""); setAnalysisError(""); setAnalysisSuccess("");
-  };
   const stopCameraTracks = () => {
     stopVisualization();
     streamRef.current?.getTracks().forEach((t) => t.stop()); streamRef.current = null;
@@ -251,54 +297,86 @@ export default function StudentPage() {
       setCameraEnabled(true);
     } catch { setCameraError("Не удалось получить доступ к камере или микрофону"); setCameraEnabled(false); }
   };
-  const handleDisableCamera = () => { if (recording) handleStopRecording(); stopCameraTracks(); };
-  const getSupportedMimeType = () => {
-    for (const m of ["video/webm;codecs=vp8,opus", "video/webm;codecs=vp8", "video/webm"])
-      if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(m)) return m;
-    return "";
+  const handleDisableCamera = () => { if (monitoring) handleStopMonitoring(); stopCameraTracks(); };
+
+  const captureAndSendFrame = async (sessionId: string) => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.min(video.videoWidth, 640);
+    canvas.height = Math.round(video.videoHeight * (canvas.width / video.videoWidth));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob(async (blob) => {
+      if (!blob) return;
+      try {
+        const fd = new FormData();
+        fd.append("session_id", sessionId);
+        fd.append("frame", blob, "frame.jpg");
+        const res = await api.post<{ face_detected: boolean; total_frames: number }>("/cv/analyze-frame", fd);
+        setLiveFrameCount(res.data.total_frames);
+        setLiveFaceDetected(res.data.face_detected);
+      } catch { /* игнорируем ошибки отдельных кадров */ }
+    }, "image/jpeg", 0.75);
   };
-  const handleStartRecording = () => {
+
+  const handleStartMonitoring = async () => {
+    if (sessionStarting || monitoring) return;  // двойной клик
+    if (!id || !selectedLessonId) { setAnalysisError("Выберите мероприятие"); return; }
+    if (lessonAlreadyAnalyzed) { setAnalysisError("Мониторинг для этого мероприятия уже проведён"); return; }
     if (!streamRef.current) { setCameraError("Сначала включите камеру"); return; }
+
+    // Очищаем предыдущий интервал если вдруг остался
+    if (frameIntervalRef.current) { clearInterval(frameIntervalRef.current); frameIntervalRef.current = null; }
+
+    const sessionId = crypto.randomUUID();
+    setSessionStarting(true);
+    setAnalysisError("");
+    setAnalysisSuccess("");
+    setAnalysisResult(null);
     try {
-      recordedChunksRef.current = []; setRecordedBlob(null); setRecordedFileName(""); setRecordingSeconds(0); setAnalysisError(""); setAnalysisSuccess("");
-      const mimeType = getSupportedMimeType();
-      const recorder = mimeType ? new MediaRecorder(streamRef.current, { mimeType }) : new MediaRecorder(streamRef.current);
-      mediaRecorderRef.current = recorder;
-      recorder.ondataavailable = (e: BlobEvent) => { if (e.data?.size > 0) recordedChunksRef.current.push(e.data); };
-      recorder.onstop = () => {
-        const mt = recorder.mimeType || "video/webm";
-        setRecordedBlob(new Blob(recordedChunksRef.current, { type: mt }));
-        setRecordedFileName(`live_recording_student_${id}.${mt.includes("webm") ? "webm" : "mp4"}`);
-      };
-      recorder.start(); setRecording(true);
-    } catch { setCameraError("Не удалось начать запись видео"); setRecording(false); }
+      const fd = new FormData();
+      fd.append("lesson_id", selectedLessonId);
+      fd.append("student_id", id);
+      fd.append("session_id", sessionId);
+      await api.post("/cv/start-session", fd);
+    } catch (err: any) {
+      setAnalysisError(err?.response?.data?.detail || "Не удалось начать сессию мониторинга");
+      setSessionStarting(false);
+      return;
+    }
+    setSessionStarting(false);
+    setLiveSessionId(sessionId);
+    setLiveFrameCount(0);
+    setLiveFaceDetected(false);
+    setMonitoringSeconds(0);
+    setMonitoring(true);
+    // Отправляем кадр каждые 2 секунды
+    frameIntervalRef.current = window.setInterval(() => captureAndSendFrame(sessionId), 2000);
   };
-  const handleStopRecording = () => {
-    if (mediaRecorderRef.current?.state !== "inactive") mediaRecorderRef.current?.stop();
-    setRecording(false);
-  };
-  const runAnalysis = async (fileToSend: File) => {
-    if (!id) return;
-    if (!selectedLessonId) { setAnalysisError("Выберите мероприятие"); setAnalysisSuccess(""); return; }
-    if (lessonAlreadyAnalyzed) { setAnalysisError("Мониторинг для этого мероприятия уже был проведён. Повторный анализ недоступен."); return; }
+
+  const handleStopMonitoring = async () => {
+    if (frameIntervalRef.current) { clearInterval(frameIntervalRef.current); frameIntervalRef.current = null; }
+    setMonitoring(false);
+    const sessionId = liveSessionId;
+    if (!sessionId) return;
     try {
-      setAnalysisLoading(true); setElapsedSeconds(0); setAnalysisError(""); setAnalysisSuccess(""); setAnalysisResult(null); setShowTechnicalDetails(false);
-      const fd = new FormData(); fd.append("lesson_id", selectedLessonId); fd.append("student_id", id); fd.append("file", fileToSend);
-      const res = await api.post<VideoAnalysisResponse>("/cv/analyze-video", fd, { headers: { "Content-Type": "multipart/form-data" } });
-      setAnalysisResult(res.data); setAnalysisSuccess("Видео успешно обработано, результаты сохранены");
+      setAnalysisLoading(true);
+      setAnalysisError("");
+      const fd = new FormData();
+      fd.append("session_id", sessionId);
+      const res = await api.post<VideoAnalysisResponse>("/cv/finalize-session", fd);
+      setAnalysisResult(res.data);
+      setAnalysisSuccess("Мониторинг завершён, результаты сохранены");
       setLessonAlreadyAnalyzed(true);
       await loadStudentAnalytics();
     } catch (err: any) {
-      setAnalysisError(err?.response?.data?.detail || "Не удалось выполнить анализ видео"); setAnalysisSuccess("");
-    } finally { setAnalysisLoading(false); }
-  };
-  const handleAnalyzeUploadedVideo = async () => {
-    if (!selectedVideo) { setAnalysisError("Сначала выберите видеофайл"); return; }
-    await runAnalysis(selectedVideo);
-  };
-  const handleAnalyzeRecordedVideo = async () => {
-    if (!recordedBlob || !recordedFileName) { setAnalysisError("Сначала запишите и остановите видео"); return; }
-    await runAnalysis(new File([recordedBlob], recordedFileName, { type: recordedBlob.type || "video/webm" }));
+      setAnalysisError(err?.response?.data?.detail || "Не удалось завершить сессию мониторинга");
+    } finally {
+      setAnalysisLoading(false);
+      setLiveSessionId("");
+    }
   };
 
   // ---- Camera visualization ----
@@ -485,14 +563,6 @@ export default function StudentPage() {
     } finally { setSendLoading(false); }
   };
 
-  const analysisDurationText = useMemo(() => {
-    const m = Math.floor(elapsedSeconds / 60), s = elapsedSeconds % 60;
-    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  }, [elapsedSeconds]);
-  const recordingDurationText = useMemo(() => {
-    const m = Math.floor(recordingSeconds / 60), s = recordingSeconds % 60;
-    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  }, [recordingSeconds]);
 
   // Compute average snapshot score for display
   const avgSnapshotScore = useMemo(() => {
@@ -837,9 +907,74 @@ export default function StudentPage() {
               )}
             </div>
 
+            {/* Face template upload section */}
+            <div style={subSectionStyle}>
+              <div style={subSectionTitleStyle}>Шаблон лица</div>
+              <p style={{ fontSize: 13, color: "#64748b", marginBottom: 12, marginTop: 0 }}>
+                Фото студента анфас — используется для идентификации при мониторинге
+              </p>
+
+              {/* Status badge */}
+              {templateHasPhoto === null && (
+                <div style={{ fontSize: 13, color: "#94a3b8" }}>Проверка...</div>
+              )}
+              {templateHasPhoto === true && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                  <span style={{ fontSize: 13, background: "#d1fae5", color: "#065f46", border: "1px solid #6ee7b7", borderRadius: 20, padding: "3px 12px", fontWeight: 600 }}>
+                    ✓ Шаблон загружен
+                  </span>
+                  {templateUploadedAt && (
+                    <span style={{ fontSize: 12, color: "#94a3b8" }}>
+                      {new Date(templateUploadedAt).toLocaleDateString("ru-RU")}
+                    </span>
+                  )}
+                </div>
+              )}
+              {templateHasPhoto === false && (
+                <div style={{ fontSize: 13, background: "#fef9c3", color: "#854d0e", border: "1px solid #fde68a", borderRadius: 8, padding: "8px 12px", marginBottom: 12 }}>
+                  ⚠ Шаблон не загружен — мониторинг невозможен
+                </div>
+              )}
+
+              {/* Upload controls */}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <input
+                  ref={templateInputRef}
+                  type="file"
+                  accept="image/*"
+                  style={{ display: "none" }}
+                  onChange={handleTemplateFileChange}
+                />
+                <button
+                  onClick={() => templateInputRef.current?.click()}
+                  style={btnPrimaryStyle}
+                >
+                  📷 {templateHasPhoto ? "Обновить фото" : "Загрузить фото"}
+                </button>
+                {templateFile && (
+                  <button
+                    onClick={handleUploadTemplate}
+                    disabled={templateUploading}
+                    style={{ ...btnGreenStyle, opacity: templateUploading ? 0.7 : 1 }}
+                  >
+                    {templateUploading ? "Сохранение..." : "Сохранить"}
+                  </button>
+                )}
+                {templatePreview && (
+                  <img
+                    src={templatePreview}
+                    alt="preview"
+                    style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 10, border: "2px solid #e2e8f0" }}
+                  />
+                )}
+              </div>
+              {templateError && <div style={{ ...inlineErrStyle, marginTop: 10 }}>{templateError}</div>}
+              {templateSuccess && <div style={{ ...inlineSuccessStyle, marginTop: 10 }}>{templateSuccess}</div>}
+            </div>
+
             {/* Camera section */}
             <div style={subSectionStyle}>
-              <div style={subSectionTitleStyle}>Запись с камеры</div>
+              <div style={subSectionTitleStyle}>Мониторинг с камеры</div>
               {/* Video + canvas overlay wrapper */}
               <div style={{ position: "relative", display: "block", width: "100%", maxWidth: 600 }}>
                 <video ref={videoRef} autoPlay muted playsInline style={videoPreviewStyle} />
@@ -853,64 +988,69 @@ export default function StudentPage() {
                   }}
                 />
               </div>
+
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
                 {!cameraEnabled ? (
-                  <button onClick={handleEnableCamera} disabled={lessonAlreadyAnalyzed} style={{ ...btnPrimaryStyle, opacity: lessonAlreadyAnalyzed ? 0.5 : 1 }}>Включить камеру</button>
+                  <button onClick={handleEnableCamera} disabled={lessonAlreadyAnalyzed} style={{ ...btnPrimaryStyle, opacity: lessonAlreadyAnalyzed ? 0.5 : 1 }}>
+                    Включить камеру
+                  </button>
                 ) : (
                   <button onClick={handleDisableCamera} style={btnDangerStyle}>Выключить камеру</button>
                 )}
-                {cameraEnabled && !recording && !lessonAlreadyAnalyzed && (
-                  <button onClick={handleStartRecording} style={btnGreenStyle}>Начать запись</button>
+                {cameraEnabled && !monitoring && !lessonAlreadyAnalyzed && (
+                  <button
+                    onClick={handleStartMonitoring}
+                    disabled={sessionStarting}
+                    style={{ ...btnGreenStyle, opacity: sessionStarting ? 0.7 : 1, cursor: sessionStarting ? "wait" : "pointer" }}
+                  >
+                    {sessionStarting ? "⏳ Подготовка..." : "▶ Начать мониторинг"}
+                  </button>
                 )}
-                {cameraEnabled && recording && (
-                  <button onClick={handleStopRecording} style={btnDangerStyle}>Остановить запись</button>
-                )}
-                {recordedBlob && !recording && !lessonAlreadyAnalyzed && (
-                  <button onClick={handleAnalyzeRecordedVideo} disabled={analysisLoading} style={btnPrimaryStyle}>
-                    {analysisLoading ? `Анализ... ${analysisDurationText}` : "Проанализировать запись"}
+                {cameraEnabled && monitoring && (
+                  <button onClick={handleStopMonitoring} disabled={analysisLoading} style={{ ...btnDangerStyle, opacity: analysisLoading ? 0.7 : 1 }}>
+                    {analysisLoading ? "💾 Сохранение..." : "⏹ Остановить и сохранить"}
                   </button>
                 )}
               </div>
+
               {cameraError && <div style={inlineErrStyle}>{cameraError}</div>}
-              {recording && (
-                <div style={recordingBoxStyle}>
-                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#dc2626", display: "inline-block", marginRight: 8 }} />
-                  Идёт запись: <strong>{recordingDurationText}</strong>
+
+              {/* Live monitoring stats */}
+              {monitoring && (
+                <div style={monitoringBoxStyle}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#dc2626", display: "inline-block", animation: "pulse 1s infinite" }} />
+                    <span style={{ fontWeight: 700, color: "#dc2626", fontSize: 14 }}>Идёт мониторинг</span>
+                    <span style={{ marginLeft: "auto", fontWeight: 700, color: "#374151", fontSize: 14 }}>
+                      {String(Math.floor(monitoringSeconds / 60)).padStart(2, "0")}:{String(monitoringSeconds % 60).padStart(2, "0")}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                    <div style={liveStatStyle}>
+                      <span style={{ fontSize: 11, color: "#64748b" }}>Кадров обработано</span>
+                      <span style={{ fontSize: 20, fontWeight: 800, color: "#1d4ed8" }}>{liveFrameCount}</span>
+                    </div>
+                    <div style={liveStatStyle}>
+                      <span style={{ fontSize: 11, color: "#64748b" }}>Лицо в кадре</span>
+                      <span style={{ fontSize: 20, fontWeight: 800, color: liveFaceDetected ? "#16a34a" : "#dc2626" }}>
+                        {liveFaceDetected ? "✓ Да" : "✗ Нет"}
+                      </span>
+                    </div>
+                    <div style={liveStatStyle}>
+                      <span style={{ fontSize: 11, color: "#64748b" }}>Интервал</span>
+                      <span style={{ fontSize: 20, fontWeight: 800, color: "#374151" }}>2 с</span>
+                    </div>
+                  </div>
                 </div>
               )}
-              {recordedBlob && !recording && (
-                <div style={successBoxStyle}>Запись завершена. Видео готово к анализу.</div>
-              )}
-            </div>
-
-            {/* Divider */}
-            <div style={divStyle} />
-
-            {/* Upload section */}
-            <div style={subSectionStyle}>
-              <div style={subSectionTitleStyle}>Загрузить готовое видео</div>
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "stretch" }}>
-                <div style={{ ...fileDropStyle, opacity: lessonAlreadyAnalyzed ? 0.5 : 1, cursor: lessonAlreadyAnalyzed ? "not-allowed" : "pointer" }}
-                  onClick={() => !lessonAlreadyAnalyzed && fileInputRef.current?.click()}>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                  <span style={{ fontSize: 14, color: selectedVideo ? "#2563eb" : "#64748b", fontWeight: selectedVideo ? 600 : 400 }}>
-                    {selectedVideo ? selectedVideo.name : "Выберите видеофайл"}
-                  </span>
-                  <input ref={fileInputRef} type="file" accept="video/*" onChange={handleVideoChange} style={{ display: "none" }} disabled={lessonAlreadyAnalyzed} />
-                </div>
-                <button onClick={handleAnalyzeUploadedVideo} disabled={analysisLoading || !selectedVideo || lessonAlreadyAnalyzed} style={{ ...btnGreenStyle, opacity: lessonAlreadyAnalyzed ? 0.5 : 1 }}>
-                  {analysisLoading ? `Анализ... ${analysisDurationText}` : "Запустить анализ"}
-                </button>
-              </div>
             </div>
 
             {analysisLoading && (
               <div style={progressBoxStyle}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
                   <div style={spinnerStyle} />
-                  <span style={{ fontWeight: 700, color: "#1d4ed8" }}>Выполняется анализ видео</span>
+                  <span style={{ fontWeight: 700, color: "#1d4ed8" }}>Сохранение результатов...</span>
                 </div>
-                <div style={{ fontSize: 14, color: "#64748b" }}>Прошло: <strong>{analysisDurationText}</strong> · Обычно занимает 3–5 минут</div>
               </div>
             )}
             {analysisError && <div style={inlineErrStyle}>{analysisError}</div>}
@@ -1037,8 +1177,8 @@ const fileDropStyle: CSSProperties = { flex: 1, minWidth: 220, display: "flex", 
 const inlineErrStyle: CSSProperties = { marginTop: 12, padding: "10px 14px", borderRadius: 10, background: "#fef2f2", border: "1px solid #fecaca", color: "#dc2626", fontSize: 13 };
 const inlineSuccessStyle: CSSProperties = { marginTop: 12, padding: "10px 14px", borderRadius: 10, background: "#f0fdf4", border: "1px solid #bbf7d0", color: "#16a34a", fontSize: 13, fontWeight: 600 };
 const progressBoxStyle: CSSProperties = { marginTop: 16, padding: "14px 18px", borderRadius: 12, border: "1px solid #bfdbfe", background: "#eff6ff" };
-const recordingBoxStyle: CSSProperties = { marginTop: 12, padding: "10px 14px", borderRadius: 10, border: "1px solid #fecaca", background: "#fef2f2", fontSize: 14, color: "#dc2626", display: "flex", alignItems: "center" };
-const successBoxStyle: CSSProperties = { marginTop: 12, padding: "10px 14px", borderRadius: 10, background: "#f0fdf4", border: "1px solid #bbf7d0", color: "#16a34a", fontSize: 14 };
+const monitoringBoxStyle: CSSProperties = { marginTop: 14, padding: "14px 16px", borderRadius: 12, border: "1.5px solid #fecaca", background: "#fef2f2" };
+const liveStatStyle: CSSProperties = { display: "flex", flexDirection: "column", gap: 4, background: "white", borderRadius: 10, padding: "10px 14px", border: "1px solid #f1f5f9", minWidth: 110 };
 const divStyle: CSSProperties = { margin: "20px 0", height: 1, background: "#f1f5f9" };
 const resultSummaryStyle: CSSProperties = { border: "1px solid #bfdbfe", borderRadius: 14, padding: "16px 18px", background: "#eff6ff" };
 const subCardStyle: CSSProperties = { border: "1px solid #e2e8f0", borderRadius: 14, padding: "16px 18px", background: "#f8fafc" };

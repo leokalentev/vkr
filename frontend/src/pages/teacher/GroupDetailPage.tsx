@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import api from "../../api/client";
-import type { CSSProperties, ChangeEvent } from "react";
+import type { CSSProperties } from "react";
 import AppShell from "../../components/layout/AppShell";
 
 type Student = {
@@ -60,16 +60,6 @@ export default function GroupDetailPage() {
   const [importResult, setImportResult] = useState<AcademicSnapshotImportResponse | null>(null);
 
   const [lessons, setLessons] = useState<Lesson[]>([]);
-  const [lessonType, setLessonType] = useState("Зачёт");
-  const [lessonTopic, setLessonTopic] = useState("");
-  const [lessonDate, setLessonDate] = useState("");
-  const [lessonStartTime, setLessonStartTime] = useState("09:00");
-  const [lessonEndTime, setLessonEndTime] = useState("10:30");
-  const [lessonLocation, setLessonLocation] = useState("");
-  const [lessonLoading, setLessonLoading] = useState(false);
-  const [lessonError, setLessonError] = useState("");
-  const [lessonSuccess, setLessonSuccess] = useState("");
-  const [teacherId, setTeacherId] = useState<number | null>(null);
 
   const [editingLessonId, setEditingLessonId] = useState<number | null>(null);
   const [editTitle, setEditTitle] = useState("");
@@ -105,41 +95,7 @@ export default function GroupDetailPage() {
   useEffect(() => {
     fetchStudents();
     fetchLessons();
-    api.get<{ id: number }>("/auth/me").then((r) => setTeacherId(r.data.id)).catch(() => {});
   }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const handleCreateLesson = async () => {
-    if (!lessonDate) { setLessonError("Укажите дату мероприятия"); return; }
-    if (!teacherId) { setLessonError("Не удалось определить ID преподавателя"); return; }
-
-    const title = lessonTopic.trim() ? `${lessonType}: ${lessonTopic.trim()}` : lessonType;
-    const startsAt = `${lessonDate}T${lessonStartTime}:00`;
-    const endsAt = `${lessonDate}T${lessonEndTime}:00`;
-
-    try {
-      setLessonLoading(true);
-      setLessonError("");
-      setLessonSuccess("");
-      await api.post("/lessons/", {
-        group_id: Number(id),
-        teacher_id: teacherId,
-        title,
-        lesson_date: lessonDate,
-        starts_at: startsAt,
-        ends_at: endsAt,
-        location: lessonLocation.trim() || null,
-      });
-      setLessonSuccess("Мероприятие успешно создано");
-      setLessonTopic("");
-      setLessonDate("");
-      setLessonLocation("");
-      await fetchLessons();
-    } catch (err: any) {
-      setLessonError(err?.response?.data?.detail || "Не удалось создать мероприятие");
-    } finally {
-      setLessonLoading(false);
-    }
-  };
 
   const startEditing = (lesson: Lesson) => {
     setEditingLessonId(lesson.id);
@@ -410,7 +366,7 @@ export default function GroupDetailPage() {
             )}
           </div>
 
-          {/* Lesson creation card */}
+          {/* Lessons list card */}
           <div style={cardStyle}>
             <div style={cardHeaderRowStyle}>
               <div style={lessonIconStyle}>
@@ -419,159 +375,106 @@ export default function GroupDetailPage() {
                 </svg>
               </div>
               <div>
-                <h2 style={sectionTitleStyle}>Создать мероприятие</h2>
-                <p style={sectionSubtitleStyle}>Добавьте учебное мероприятие для видеоанализа вовлечённости</p>
+                <h2 style={sectionTitleStyle}>Мероприятия группы</h2>
+                <p style={sectionSubtitleStyle}>Создаются автоматически при импорте Excel с указанным event_type</p>
               </div>
             </div>
 
-            <div style={lessonFormGridStyle}>
-              <div>
-                <label style={fieldLabelStyle}>Тип мероприятия</label>
-                <select
-                  style={inputStyle}
-                  value={lessonType}
-                  onChange={(e: ChangeEvent<HTMLSelectElement>) => setLessonType(e.target.value)}
-                >
-                  <option value="Зачёт">Зачёт</option>
-                  <option value="Экзамен">Экзамен</option>
-                </select>
-              </div>
-              <div>
-                <label style={fieldLabelStyle}>Тема / предмет (необязательно)</label>
-                <input
-                  style={inputStyle}
-                  type="text"
-                  placeholder="Например, по математическому анализу"
-                  value={lessonTopic}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => setLessonTopic(e.target.value)}
-                />
-              </div>
-              <div>
-                <label style={fieldLabelStyle}>Дата</label>
-                <input style={inputStyle} type="date" value={lessonDate} onChange={(e: ChangeEvent<HTMLInputElement>) => setLessonDate(e.target.value)} />
-              </div>
-              <div>
-                <label style={fieldLabelStyle}>Начало</label>
-                <input style={inputStyle} type="time" value={lessonStartTime} onChange={(e: ChangeEvent<HTMLInputElement>) => setLessonStartTime(e.target.value)} />
-              </div>
-              <div>
-                <label style={fieldLabelStyle}>Конец</label>
-                <input style={inputStyle} type="time" value={lessonEndTime} onChange={(e: ChangeEvent<HTMLInputElement>) => setLessonEndTime(e.target.value)} />
-              </div>
-              <div>
-                <label style={fieldLabelStyle}>Аудитория (необязательно)</label>
-                <input style={inputStyle} type="text" placeholder="Например, 301-А" value={lessonLocation} onChange={(e: ChangeEvent<HTMLInputElement>) => setLessonLocation(e.target.value)} />
-              </div>
-            </div>
+            {editError && <div style={{ ...inlineErrorStyle, marginBottom: 10 }}>{editError}</div>}
 
-            <div style={{ marginTop: 16 }}>
-              <button onClick={handleCreateLesson} disabled={lessonLoading} style={lessonBtnStyle}>
-                {lessonLoading ? "Создание..." : "Создать мероприятие"}
-              </button>
-            </div>
-
-            {lessonError && <div style={inlineErrorStyle}>{lessonError}</div>}
-            {lessonSuccess && <div style={inlineSuccessStyle}>{lessonSuccess}</div>}
-
-            {lessons.length > 0 && (
-              <div style={{ marginTop: 20 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#374151", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                  Мероприятия группы ({lessons.length})
-                </div>
-                {editError && <div style={{ ...inlineErrorStyle, marginBottom: 10 }}>{editError}</div>}
-                <div style={tableWrapStyle}>
-                  <table style={tableStyle}>
-                    <thead>
-                      <tr>
-                        <th style={{ ...thStyle, width: 48 }}>ID</th>
-                        <th style={thStyle}>Название</th>
-                        <th style={thStyle}>Дата</th>
-                        <th style={thStyle}>Время</th>
-                        <th style={thStyle}>Аудитория</th>
-                        <th style={{ ...thStyle, width: 140 }}>Действия</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {lessons.map((lesson) =>
-                        editingLessonId === lesson.id ? (
-                          <tr key={lesson.id} style={{ background: "#f0f7ff" }}>
-                            <td style={{ ...tdStyle, color: "#94a3b8", fontWeight: 700 }}>#{lesson.id}</td>
-                            <td style={tdStyle}>
-                              <input
-                                style={{ ...editInputStyle, width: "100%" }}
-                                value={editTitle}
-                                onChange={(e) => setEditTitle(e.target.value)}
-                              />
-                            </td>
-                            <td style={tdStyle}>
-                              <input
-                                style={editInputStyle}
-                                type="date"
-                                value={editDate}
-                                onChange={(e) => setEditDate(e.target.value)}
-                              />
-                            </td>
-                            <td style={tdStyle}>
-                              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                                <input style={{ ...editInputStyle, width: 80 }} type="time" value={editStartTime} onChange={(e) => setEditStartTime(e.target.value)} />
-                                <span style={{ color: "#94a3b8" }}>—</span>
-                                <input style={{ ...editInputStyle, width: 80 }} type="time" value={editEndTime} onChange={(e) => setEditEndTime(e.target.value)} />
-                              </div>
-                            </td>
-                            <td style={tdStyle}>
-                              <input
-                                style={editInputStyle}
-                                type="text"
-                                placeholder="Аудитория"
-                                value={editLocation}
-                                onChange={(e) => setEditLocation(e.target.value)}
-                              />
-                            </td>
-                            <td style={tdStyle}>
-                              <div style={{ display: "flex", gap: 6 }}>
-                                <button
-                                  onClick={() => handleSaveEdit(lesson)}
-                                  disabled={editLoading}
-                                  style={saveBtnStyle}
-                                >
-                                  {editLoading ? "..." : "Сохранить"}
-                                </button>
-                                <button
-                                  onClick={() => setEditingLessonId(null)}
-                                  style={cancelBtnStyle}
-                                >
-                                  Отмена
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ) : (
-                          <tr key={lesson.id}>
-                            <td style={{ ...tdStyle, color: "#94a3b8", fontWeight: 700 }}>#{lesson.id}</td>
-                            <td style={{ ...tdStyle, fontWeight: 600 }}>{lesson.title}</td>
-                            <td style={tdStyle}>{new Date(lesson.lesson_date).toLocaleDateString("ru-RU")}</td>
-                            <td style={{ ...tdStyle, color: "#64748b" }}>
-                              {lesson.starts_at.slice(11, 16)} — {lesson.ends_at.slice(11, 16)}
-                            </td>
-                            <td style={{ ...tdStyle, color: "#64748b" }}>{lesson.location ?? "—"}</td>
-                            <td style={tdStyle}>
-                              <div style={{ display: "flex", gap: 6 }}>
-                                <button onClick={() => startEditing(lesson)} style={editBtnStyle}>Изменить</button>
-                                <button
-                                  onClick={() => handleDeleteLesson(lesson.id)}
-                                  disabled={deleteLoadingId === lesson.id}
-                                  style={deleteBtnStyle}
-                                >
-                                  {deleteLoadingId === lesson.id ? "..." : "Удалить"}
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        )
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+            {lessons.length === 0 ? (
+              <div style={emptyStyle}>
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" strokeWidth="1.5" strokeLinecap="round" style={{ marginBottom: 12 }}>
+                  <rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
+                </svg>
+                <div style={{ color: "#94a3b8", fontSize: 14 }}>Мероприятия появятся после импорта Excel с колонкой event_type</div>
+              </div>
+            ) : (
+              <div style={tableWrapStyle}>
+                <table style={tableStyle}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...thStyle, width: 48 }}>ID</th>
+                      <th style={thStyle}>Название</th>
+                      <th style={thStyle}>Дата</th>
+                      <th style={thStyle}>Время</th>
+                      <th style={thStyle}>Аудитория</th>
+                      <th style={{ ...thStyle, width: 140 }}>Действия</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lessons.map((lesson) =>
+                      editingLessonId === lesson.id ? (
+                        <tr key={lesson.id} style={{ background: "#f0f7ff" }}>
+                          <td style={{ ...tdStyle, color: "#94a3b8", fontWeight: 700 }}>#{lesson.id}</td>
+                          <td style={tdStyle}>
+                            <input
+                              style={{ ...editInputStyle, width: "100%" }}
+                              value={editTitle}
+                              onChange={(e) => setEditTitle(e.target.value)}
+                            />
+                          </td>
+                          <td style={tdStyle}>
+                            <input
+                              style={editInputStyle}
+                              type="date"
+                              value={editDate}
+                              onChange={(e) => setEditDate(e.target.value)}
+                            />
+                          </td>
+                          <td style={tdStyle}>
+                            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                              <input style={{ ...editInputStyle, width: 80 }} type="time" value={editStartTime} onChange={(e) => setEditStartTime(e.target.value)} />
+                              <span style={{ color: "#94a3b8" }}>—</span>
+                              <input style={{ ...editInputStyle, width: 80 }} type="time" value={editEndTime} onChange={(e) => setEditEndTime(e.target.value)} />
+                            </div>
+                          </td>
+                          <td style={tdStyle}>
+                            <input
+                              style={editInputStyle}
+                              type="text"
+                              placeholder="Аудитория"
+                              value={editLocation}
+                              onChange={(e) => setEditLocation(e.target.value)}
+                            />
+                          </td>
+                          <td style={tdStyle}>
+                            <div style={{ display: "flex", gap: 6 }}>
+                              <button onClick={() => handleSaveEdit(lesson)} disabled={editLoading} style={saveBtnStyle}>
+                                {editLoading ? "..." : "Сохранить"}
+                              </button>
+                              <button onClick={() => setEditingLessonId(null)} style={cancelBtnStyle}>
+                                Отмена
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : (
+                        <tr key={lesson.id}>
+                          <td style={{ ...tdStyle, color: "#94a3b8", fontWeight: 700 }}>#{lesson.id}</td>
+                          <td style={{ ...tdStyle, fontWeight: 600 }}>{lesson.title}</td>
+                          <td style={tdStyle}>{new Date(lesson.lesson_date).toLocaleDateString("ru-RU")}</td>
+                          <td style={{ ...tdStyle, color: "#64748b" }}>
+                            {lesson.starts_at.slice(11, 16)} — {lesson.ends_at.slice(11, 16)}
+                          </td>
+                          <td style={{ ...tdStyle, color: "#64748b" }}>{lesson.location ?? "—"}</td>
+                          <td style={tdStyle}>
+                            <div style={{ display: "flex", gap: 6 }}>
+                              <button onClick={() => startEditing(lesson)} style={editBtnStyle}>Изменить</button>
+                              <button
+                                onClick={() => handleDeleteLesson(lesson.id)}
+                                disabled={deleteLoadingId === lesson.id}
+                                style={deleteBtnStyle}
+                              >
+                                {deleteLoadingId === lesson.id ? "..." : "Удалить"}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    )}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
@@ -793,29 +696,6 @@ const lessonIconStyle: CSSProperties = {
   background: "linear-gradient(135deg, #2563eb, #6366f1)",
   display: "flex", alignItems: "center", justifyContent: "center",
   boxShadow: "0 4px 12px rgba(37,99,235,0.28)",
-};
-const lessonFormGridStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-  gap: 14,
-};
-const fieldLabelStyle: CSSProperties = {
-  display: "block", fontSize: 13, fontWeight: 600, color: "#374151", marginBottom: 6,
-};
-const inputStyle: CSSProperties = {
-  width: "100%", padding: "11px 14px", border: "1.5px solid #e2e8f0",
-  borderRadius: 12, fontSize: 14, color: "#0f172a", background: "#f8fafc",
-  boxSizing: "border-box",
-};
-const lessonBtnStyle: CSSProperties = {
-  padding: "11px 22px", borderRadius: 12, border: "none",
-  background: "linear-gradient(135deg, #2563eb, #3b82f6)",
-  color: "white", fontWeight: 700, fontSize: 14, cursor: "pointer",
-  boxShadow: "0 3px 10px rgba(37,99,235,0.28)",
-};
-const inlineSuccessStyle: CSSProperties = {
-  marginTop: 12, padding: "10px 14px", borderRadius: 10,
-  background: "#f0fdf4", border: "1px solid #bbf7d0", color: "#16a34a", fontSize: 13, fontWeight: 600,
 };
 const editBtnStyle: CSSProperties = {
   padding: "4px 12px", borderRadius: 8, border: "1.5px solid #dbeafe",

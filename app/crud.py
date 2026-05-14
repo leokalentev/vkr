@@ -233,6 +233,19 @@ def add_student_to_group(db: Session, group_id: int, student_id: int):
     if existing:
         return None, "already_in_group"
 
+    # Студент может состоять только в одной группе
+    other_groups = (
+        db.query(models.GroupMembership)
+        .filter(
+            models.GroupMembership.student_id == student_id,
+            models.GroupMembership.group_id != group_id,
+        )
+        .all()
+    )
+    if other_groups:
+        other_group_ids = [m.group_id for m in other_groups]
+        return None, f"already_in_other_group:{','.join(str(g) for g in other_group_ids)}"
+
     membership = models.GroupMembership(
         group_id=group_id,
         student_id=student_id,
@@ -461,6 +474,36 @@ def get_active_face_template(db: Session, student_id: int):
         .order_by(models.FaceTemplate.created_at.desc())
         .first()
     )
+
+
+def create_face_template(
+    db: Session,
+    student_id: int,
+    image_path: str,
+    embedding: bytes,
+    embedding_dim: int,
+    model_name: str,
+    model_version: str | None = None,
+) -> models.FaceTemplate:
+    # деактивируем все предыдущие шаблоны этого студента
+    db.query(models.FaceTemplate).filter(
+        models.FaceTemplate.student_id == student_id,
+    ).update({"is_active": False})
+
+    tmpl = models.FaceTemplate(
+        student_id=student_id,
+        model_name=model_name,
+        model_version=model_version,
+        embedding=embedding,
+        embedding_dim=embedding_dim,
+        image_path=image_path,
+        is_active=True,
+    )
+    db.add(tmpl)
+    db.commit()
+    db.refresh(tmpl)
+    return tmpl
+
 
 
 def derive_grade_score_from_assessment(db: Session, lesson_id: int, student_id: int):

@@ -1,7 +1,9 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 import secrets
 import string
+import threading
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +22,35 @@ from app.email_utils import send_student_credentials_email, send_student_report_
 from app.fuzzy_recommendations import get_hobby_recommendations, ALL_TRAITS
 from cv_module.service import analyze_video_file
 from cv_module.config import TEMPLATES_DIR
+from cv_module.face_engine import FaceEngine
+from cv_module.head_pose import HeadPoseAnalyzer
+from cv_module.realtime import RealtimeSession, decode_frame
+
+
+# =========================
+# GLOBAL ML ENGINES (инициализируются один раз при старте)
+# =========================
+
+_face_engine: FaceEngine | None = None
+_pose_analyzer: HeadPoseAnalyzer | None = None
+_engine_lock = threading.Lock()
+
+def get_engines() -> tuple[FaceEngine, HeadPoseAnalyzer]:
+    global _face_engine, _pose_analyzer
+    if _face_engine is None:
+        with _engine_lock:
+            if _face_engine is None:
+                _face_engine = FaceEngine()
+                _pose_analyzer = HeadPoseAnalyzer()
+    return _face_engine, _pose_analyzer  # type: ignore
+
+
+# =========================
+# REALTIME SESSIONS
+# =========================
+
+_active_sessions: dict[str, RealtimeSession] = {}
+_sessions_lock = threading.Lock()
 
 
 Base.metadata.create_all(bind=engine)
@@ -29,6 +60,16 @@ app = FastAPI(
     description="Backend for student activity and engagement analysis system",
     version="1.0.0",
 )
+
+
+@app.on_event("startup")
+def _preload_engines():
+    """Прогрев FaceEngine при старте — чтобы первый /cv/start-session не висел 20 секунд."""
+    try:
+        get_engines()
+        print("✅ FaceEngine + HeadPoseAnalyzer ready")
+    except Exception as exc:
+        print(f"⚠️  FaceEngine preload failed: {exc}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -272,6 +313,15 @@ def import_students_to_group(
             )
 
         _, error = crud.add_student_to_group(db, group_id, student_user.id)
+
+        if error and error.startswith("already_in_other_group"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Студент {student_data['email']} уже состоит в другой группе. "
+                    "Один email не может быть зарегистрирован в нескольких группах."
+                ),
+            )
 
         if error in (None, "already_in_group"):
             imported_students.append(student_user)
@@ -560,7 +610,8 @@ def analyze_video(
     if not file.filename:
         raise HTTPException(status_code=400, detail="File name is missing")
 
-    if not file.content_type or not file.content_type.startswith("video/"):
+    allowed_video_types = ("video/", "application/octet-stream")
+    if file.content_type and not any(file.content_type.startswith(t) for t in allowed_video_types):
         raise HTTPException(status_code=400, detail="Only video files are supported")
 
     active_face_template = crud.get_active_face_template(db, student_id)
@@ -617,6 +668,211 @@ def analyze_video(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Video analysis failed: {str(e)}")
+
+
+# =========================
+# FACE TEMPLATE UPLOAD
+# =========================
+
+@app.get("/students/{student_id}/face-template/status")
+def get_face_template_status(
+    student_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+):
+    """Проверить, есть ли шаблон лица для студента."""
+    template = crud.get_active_face_template(db, student_id)
+    fallback = TEMPLATES_DIR / f"student_{student_id}.jpg"
+
+    has_file = bool(
+        (template and template.image_path and Path(template.image_path).exists())
+        or fallback.exists()
+    )
+    return {
+        "has_template": has_file,
+        "uploaded_at": template.created_at.isoformat() if template else None,
+    }
+
+
+@app.post("/students/{student_id}/face-template")
+def upload_face_template(
+    student_id: int,
+    photo: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
+    ),
+):
+    """Загрузить / обновить эталонное фото лица студента."""
+    import cv2
+    import numpy as np
+
+    student = crud.get_user_by_id(db, student_id)
+    if not student or student.role != models.UserRole.STUDENT:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    img_bytes = photo.file.read()
+    np_arr = np.frombuffer(img_bytes, np.uint8)
+    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Не удалось прочитать изображение")
+
+    # масштабируем если слишком большое
+    h, w = frame.shape[:2]
+    if w > 1000:
+        scale = 1000 / w
+        frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+
+    face_engine, _ = get_engines()
+    face = face_engine.get_primary_face(frame)
+    if face is None:
+        raise HTTPException(status_code=400, detail="На фото не обнаружено лицо. Загрузите чёткое фото с лицом анфас.")
+
+    # сохраняем на диск
+    TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+    save_path = TEMPLATES_DIR / f"student_{student_id}.jpg"
+    cv2.imwrite(str(save_path), frame)
+
+    # сохраняем в БД (embedding + путь)
+    emb_bytes = face.embedding.tobytes()
+    crud.create_face_template(
+        db,
+        student_id=student_id,
+        image_path=str(save_path),
+        embedding=emb_bytes,
+        embedding_dim=len(face.embedding),
+        model_name="insightface+buffalo_l",
+        model_version="v1",
+    )
+
+    return {"status": "ok", "path": str(save_path)}
+
+
+# =========================
+# REALTIME CV — покадровый анализ с камеры
+# =========================
+
+def _resolve_template(db: Session, student_id: int) -> Path:
+    """Найти шаблон лица студента или выбросить 404."""
+    active = crud.get_active_face_template(db, student_id)
+    if active and active.image_path:
+        p = Path(active.image_path)
+        if p.exists():
+            return p
+    fallback = TEMPLATES_DIR / f"student_{student_id}.jpg"
+    if fallback.exists():
+        return fallback
+    raise HTTPException(status_code=404, detail="Face template not found for this student")
+
+
+@app.post("/cv/start-session")
+def start_realtime_session(
+    lesson_id: int = Form(...),
+    student_id: int = Form(...),
+    session_id: str = Form(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
+    ),
+):
+    lesson = crud.get_lesson_by_id(db, lesson_id)
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+
+    student = crud.get_user_by_id(db, student_id)
+    if not student or student.role != models.UserRole.STUDENT:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    if not crud.get_group_membership(db, lesson.group_id, student_id):
+        raise HTTPException(status_code=400, detail="Student is not assigned to the lesson group")
+
+    if current_user.role == models.UserRole.TEACHER and lesson.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    template_path = _resolve_template(db, student_id)
+
+    face_engine, _ = get_engines()
+    try:
+        template_embedding = face_engine.load_template_embedding(template_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Ошибка шаблона лица: {e}")
+
+    session = RealtimeSession(
+        session_id=session_id,
+        lesson_id=lesson_id,
+        student_id=student_id,
+        teacher_id=current_user.id,
+        template_embedding=template_embedding,
+    )
+    with _sessions_lock:
+        # если предыдущая сессия того же студента/мероприятия висит — убираем
+        stale = [k for k, s in _active_sessions.items()
+                 if s.lesson_id == lesson_id and s.student_id == student_id]
+        for k in stale:
+            del _active_sessions[k]
+        _active_sessions[session_id] = session
+
+    return {"status": "started", "session_id": session_id}
+
+
+@app.post("/cv/analyze-frame")
+def analyze_realtime_frame(
+    session_id: str = Form(...),
+    frame: UploadFile = File(...),
+):
+    with _sessions_lock:
+        session = _active_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found or expired")
+
+    frame_bytes = frame.file.read()
+    frame_bgr = decode_frame(frame_bytes)
+    if frame_bgr is None:
+        raise HTTPException(status_code=400, detail="Cannot decode frame")
+
+    face_engine, pose_analyzer = get_engines()
+    result = session.process_frame(frame_bgr, face_engine, pose_analyzer)
+    return result
+
+
+@app.post("/cv/finalize-session", response_model=schemas.VideoAnalysisResponse)
+def finalize_realtime_session(
+    session_id: str = Form(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(
+        require_roles(models.UserRole.TEACHER, models.UserRole.ADMIN)
+    ),
+):
+    with _sessions_lock:
+        session = _active_sessions.pop(session_id, None)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found or already finalized")
+
+    if session.frames_processed == 0:
+        raise HTTPException(status_code=400, detail="No frames were processed in this session")
+
+    try:
+        # grade_score: нормализованная оценка за контрольную (из БД)
+        grade_score = crud.derive_grade_score_from_assessment(
+            db, session.lesson_id, session.student_id
+        )
+
+        result = session.aggregate(grade_score=grade_score)
+
+        attendance = crud.create_or_update_attendance(
+            db, schemas.AttendanceCreate(**result["attendance_payload"])
+        )
+        engagement_metric = crud.create_or_update_engagement_metric(
+            db, schemas.EngagementMetricCreate(**result["engagement_payload"])
+        )
+
+        return schemas.VideoAnalysisResponse(
+            attendance=attendance,
+            engagement_metric=engagement_metric,
+            meta=schemas.VideoAnalysisMeta(**result["meta"]),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Finalize failed: {e}")
 
 
 # =========================
@@ -1097,6 +1353,14 @@ def import_academic_snapshots_to_group(
                 )
 
         _, membership_error = crud.add_student_to_group(db, group.id, student.id)
+        if membership_error and membership_error.startswith("already_in_other_group"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Студент {row['email']} уже состоит в другой группе. "
+                    "Один email не может быть зарегистрирован в нескольких группах."
+                ),
+            )
         if membership_error not in (None, "already_in_group"):
             raise HTTPException(
                 status_code=400,

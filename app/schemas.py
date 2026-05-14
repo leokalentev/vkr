@@ -213,7 +213,7 @@ class EngagementMetricBase(BaseModel):
     presence_ratio: float = Field(ge=0, le=1)
     face_match_confidence: Optional[float] = Field(default=None, ge=0, le=1)
     head_pose_forward_ratio: float = Field(ge=0, le=1)
-    head_pose_variance: float = Field(ge=0, le=1)
+    head_pose_variance: float = Field(ge=0)  # дисперсия не ограничена сверху единицей
     motion_level: float = Field(ge=0, le=1)
     frame_stability: float = Field(ge=0, le=1)
     grade_score: Optional[float] = Field(default=None, ge=0, le=1)
@@ -351,8 +351,9 @@ class VideoAnalysisMeta(BaseModel):
     detected_faces: int
     matched_faces: int
     pose_detected_frames: int
-    video_path: str
-    template_path: str
+    video_path: Optional[str] = None      # None для realtime-сессий
+    template_path: Optional[str] = None   # None для realtime-сессий
+    realtime: bool = False
 
 
 class VideoAnalysisResponse(BaseModel):

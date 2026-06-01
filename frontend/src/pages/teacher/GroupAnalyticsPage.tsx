@@ -138,9 +138,9 @@ export default function GroupAnalyticsPage() {
               gradient="linear-gradient(135deg,#0891b2,#06b6d4)" shadowColor="rgba(8,145,178,0.28)"
             />
             <StatCard
-              title="Средний балл по журналу"
-              value={data.average_academic_score !== null ? `${(data.average_academic_score * 50).toFixed(1)}` : "—"}
-              sub="из 50 возможных баллов"
+              title="Средний общий балл"
+              value={data.average_academic_score !== null ? `${(data.average_academic_score * 100).toFixed(1)}` : "—"}
+              sub="из 100 возможных баллов"
               icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>}
               gradient="linear-gradient(135deg,#7c3aed,#a855f7)" shadowColor="rgba(124,58,237,0.28)"
             />
@@ -172,7 +172,7 @@ export default function GroupAnalyticsPage() {
                     <th style={{ ...thStyle, width: 48 }}>#</th>
                     <th style={thStyle}>Студент</th>
                     <th style={thStyle}>Посещаемость</th>
-                    <th style={thStyle}>Балл по журналу</th>
+                    <th style={thStyle}>Общий балл</th>
                     <th style={thStyle}>Индекс вовлечённости</th>
                     <th style={thStyle}>Интегральный</th>
                     <th style={thStyle}>Уровень</th>
@@ -213,8 +213,8 @@ export default function GroupAnalyticsPage() {
                         <td style={tdStyle}>
                           {s.average_academic_score !== null ? (
                             <div>
-                              <span style={boldNumStyle}>{(s.average_academic_score * 50).toFixed(1)}</span>
-                              <span style={{ fontSize: 13, color: "#94a3b8" }}> / 50</span>
+                              <span style={boldNumStyle}>{(s.average_academic_score * 100).toFixed(1)}</span>
+                              <span style={{ fontSize: 13, color: "#94a3b8" }}> / 100</span>
                             </div>
                           ) : <span style={dashStyle}>—</span>}
                         </td>

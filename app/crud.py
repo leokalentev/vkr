@@ -799,11 +799,20 @@ def build_student_analytics_summary(db: Session, student_id: int):
         ]
         academic_scores = [score for score in academic_scores if score is not None]
 
-        average_academic_score = None
-        if academic_scores:
-            average_academic_score = round(sum(academic_scores) / len(academic_scores), 4)
+        # Дополняем оценками, выставленными преподавателем вручную через сайт
+        assessment_results = get_results_by_student(db, student_id)
+        assessment_scores = [
+            score for score in
+            (normalize_assessment_result(result) for result in assessment_results)
+            if score is not None
+        ]
+        all_academic_scores = academic_scores + assessment_scores
 
-        total_assessment_results = len(snapshots)
+        average_academic_score = None
+        if all_academic_scores:
+            average_academic_score = round(sum(all_academic_scores) / len(all_academic_scores), 4)
+
+        total_assessment_results = len(snapshots) + len(assessment_results)
 
     else:
         attendance_records = get_attendance_by_student(db, student_id)

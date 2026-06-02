@@ -1,5 +1,3 @@
-"""Real-time per-frame analysis session for camera monitoring."""
-
 import statistics
 import time
 from dataclasses import dataclass, field
@@ -34,29 +32,19 @@ class RealtimeSession:
     template_embedding: object
     created_at: float = field(default_factory=time.time)
 
-    # Per-session stateful analyzer (tracks prev frame for motion)
     motion_analyzer: MotionAnalyzer = field(default_factory=MotionAnalyzer)
 
-    # Accumulated stats
     frames_processed: int = 0
     detected_count: int = 0
     matched_count: int = 0
-
-    # Косинусные сходства по всем кадрам, где лицо обнаружено
-    # → face_match_confidence = mean(similarities) согласно диплому
     similarities: list = field(default_factory=list)
 
     forward_count: int = 0
     pose_detected_count: int = 0
-
-    # nose_offset ≈ горизонтальное отклонение носа (прокси для yaw)
-    # Используем для head_pose_variance = Var(nose_offset)
     nose_offsets: list = field(default_factory=list)
 
     motion_scores: list = field(default_factory=list)
 
-    # frame_stability: считаем эпизоды исчезновения лица (present→absent)
-    # согласно диплому: frame_stability = 1 - min(N_unstable / N_max, 1)
     disappearance_count: int = 0
     _prev_face_detected: bool = field(default=False, repr=False)
 
@@ -90,7 +78,6 @@ class RealtimeSession:
                     self.forward_count += 1
                     is_forward = True
 
-        # Эпизод исчезновения: лицо было — и пропало
         if self._prev_face_detected and not face_detected:
             self.disappearance_count += 1
         self._prev_face_detected = face_detected
@@ -113,40 +100,27 @@ class RealtimeSession:
     def aggregate(self, grade_score: float | None = None) -> dict:
         n = self.frames_processed
 
-        # ── presence_ratio: доля кадров с обнаруженным лицом ──────────────────
         presence_ratio = self.detected_count / n if n else 0.0
 
-        # ── face_match_confidence: среднее косинусное сходство ─────────────────
-        # Диплом: median/mean(s_t) по всем кадрам, где лицо распознано
         face_match_confidence = (
             statistics.mean(self.similarities) if self.similarities else None
         )
 
-        # ── head_pose_forward_ratio: доля кадров "лицо вперёд" ────────────────
         forward_ratio = (
             self.forward_count / self.pose_detected_count if self.pose_detected_count else 0.0
         )
 
-        # ── head_pose_variance: дисперсия nose_offset (прокси yaw) ───────────
-        # Диплом: Var(yaw) + Var(pitch). HeadPoseAnalyzer вычисляет
-        # только горизонтальное отклонение (nose_offset ≈ yaw-прокси).
         nose_var = 0.0
         if len(self.nose_offsets) >= 2:
             nose_var = statistics.variance(self.nose_offsets)
 
-        # ── motion_level: средний уровень межкадрового движения ───────────────
-        # MotionAnalyzer считает mean(|I_t - I_{t-1}|) / 255 — аналог ||Δp_t||
         motion_level = (
             statistics.mean(self.motion_scores) if self.motion_scores else 0.0
         )
 
-        # ── frame_stability: 1 - min(N_unstable / N_max, 1) ──────────────────
-        # Диплом: N_unstable = число эпизодов "лицо исчезло"
-        # N_max = 1 исчезновение на каждые 10 кадров (≈ 20 секунд при 1 fps/2с)
         n_max = max(n // 10, 1)
         frame_stability = 1.0 - min(self.disappearance_count / n_max, 1.0)
 
-        # Для посещаемости используем mean similarity (не matched_ratio)
         confidence_for_attendance = face_match_confidence
 
         return {

@@ -120,7 +120,6 @@ export default function StudentPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  // Visualization overlay
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const faceDetIntervalRef = useRef<number | null>(null);
@@ -396,7 +395,6 @@ export default function StudentPage() {
     const canvas = canvasRef.current;
     if (!video || !canvas) return;
 
-    // ── Helpers ────────────────────────────────────────────────────
     const drawBrackets = (ctx: CanvasRenderingContext2D, W: number, H: number) => {
       const len = 28, pad = 14;
       ctx.strokeStyle = "rgba(0,255,128,0.75)";
@@ -461,7 +459,6 @@ export default function StudentPage() {
       ctx.fillText("MOTION", pad, H - bH - 11);
     };
 
-    // ── Motion detection (every 120 ms) ───────────────────────────
     const offscreen = document.createElement("canvas");
     let offCtx: CanvasRenderingContext2D | null = null;
 
@@ -490,7 +487,6 @@ export default function StudentPage() {
       prevFrameDataRef.current = new Uint8ClampedArray(frame.data);
     }, 120);
 
-    // ── Face detection (every 180 ms, browser FaceDetector API) ──
     let faceDetector: any = null;
     try {
       // @ts-expect-error — experimental browser API
@@ -510,7 +506,6 @@ export default function StudentPage() {
       }, 180);
     }
 
-    // ── Draw loop ─────────────────────────────────────────────────
     const draw = () => {
       if (!video || !canvas) return;
       const W = video.videoWidth || 640;

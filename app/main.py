@@ -717,7 +717,6 @@ def upload_face_template(
     if frame is None:
         raise HTTPException(status_code=400, detail="Не удалось прочитать изображение")
 
-    # масштабируем если слишком большое
     h, w = frame.shape[:2]
     if w > 1000:
         scale = 1000 / w
@@ -728,12 +727,10 @@ def upload_face_template(
     if face is None:
         raise HTTPException(status_code=400, detail="На фото не обнаружено лицо. Загрузите чёткое фото с лицом анфас.")
 
-    # сохраняем на диск
     TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
     save_path = TEMPLATES_DIR / f"student_{student_id}.jpg"
     cv2.imwrite(str(save_path), frame)
 
-    # сохраняем в БД (embedding + путь)
     emb_bytes = face.embedding.tobytes()
     crud.create_face_template(
         db,
@@ -852,7 +849,6 @@ def finalize_realtime_session(
         raise HTTPException(status_code=400, detail="No frames were processed in this session")
 
     try:
-        # grade_score: нормализованная оценка за контрольную (из БД)
         grade_score = crud.derive_grade_score_from_assessment(
             db, session.lesson_id, session.student_id
         )
@@ -1313,7 +1309,7 @@ def import_academic_snapshots_to_group(
 
     processed_items = []
     created_students_count = 0
-    created_groups_count = 0  # для совместимости со схемой, тут всегда 0
+    created_groups_count = 0
 
     for row in rows:
         # Проверяем, что группа в Excel совпадает с текущей страницей группы

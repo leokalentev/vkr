@@ -19,8 +19,35 @@ Thumbs.db
 
 # dotenv
 .env
+.env.*
+!.env.example
 
 # logs
 *.log
 
-.claude
+# Claude
+.claude/
+
+# test artifacts
+test_vkr.db
+.pytest_cache/
+htmlcov/
+.coverage
+
+# uploads / templates (user data)
+uploads/
+cv_module/templates/
+cv_module/output/
+
+# frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# misc
+*.egg-info/
+dist/
+build/
+seed_db.py
+reset_db_keep_staff.py
+test_pg.py

@@ -526,7 +526,6 @@ def calculate_engagement_index(
 ):
     motion_activity_score = transform_motion_for_engagement(metric_data.motion_level)
 
-    # face_match_confidence excluded from weighted sum — used as quality multiplier below
     base_weights = {
         "presence_ratio": 0.25,
         "head_pose_forward_ratio": 0.30,
@@ -560,13 +559,6 @@ def calculate_engagement_index(
     engagement_index = 0.0
     for key, weight in normalized_weights.items():
         engagement_index += float(transformed_values[key]) * weight
-
-    # =========================
-    # МУЛЬТИПЛИКАТОР КАЧЕСТВА ИДЕНТИФИКАЦИИ
-    # =========================
-    # face_match_confidence — это уверенность в распознавании личности,
-    # а не поведенческий признак вовлечённости. Используем как
-    # доверительный коэффициент: чем хуже совпадение, тем ниже доверие к метрикам.
 
     face_conf = metric_data.face_match_confidence
     quality_multiplier = 1.0

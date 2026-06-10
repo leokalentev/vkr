@@ -747,10 +747,8 @@ def normalize_assessment_result(result: models.AssessmentResult):
 def determine_engagement_level(score: float | None):
     if score is None:
         return "insufficient_data"
-    if score >= 0.75:
+    if score >= 0.66:
         return "high"
-    if score >= 0.55:
-        return "good"
     if score >= 0.33:
         return "medium"
     return "low"

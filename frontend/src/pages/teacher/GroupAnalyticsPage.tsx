@@ -47,7 +47,6 @@ function fmtIdx(v: number | null) {
 function engagementLabel(level: string) {
   const map: Record<string, { label: string; bg: string; color: string }> = {
     high: { label: "Высокая", bg: "#dcfce7", color: "#16a34a" },
-    good: { label: "Хорошая", bg: "#d1fae5", color: "#059669" },
     medium: { label: "Средняя", bg: "#fef9c3", color: "#ca8a04" },
     low: { label: "Низкая", bg: "#fee2e2", color: "#dc2626" },
     insufficient_data: { label: "Нет данных", bg: "#f1f5f9", color: "#64748b" },

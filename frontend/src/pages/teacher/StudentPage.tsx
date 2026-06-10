@@ -68,7 +68,7 @@ const interpretationRows = [
     name: "Интегральный индекс",
     range: "0.00–1.00",
     meaning: "Итоговый показатель = 30% × посещаемость + 30% × учебный результат + 40% × вовлечённость. Если какой-то компонент отсутствует, веса перераспределяются между остальными.",
-    effect: "Основа для уровня (Высокий / Хороший / Средний / Низкий) и для автоматических рекомендаций. ≥0.85 — Высокий, ≥0.70 — Хороший, ≥0.50 — Средний, <0.50 — Низкий.",
+    effect: "Основа для уровня (Высокий / Средний / Низкий) и для автоматических рекомендаций. ≥0.66 — Высокий, ≥0.33 — Средний, <0.33 — Низкий.",
   },
 ];
 
@@ -86,18 +86,17 @@ function fmtPct(v: number | null) {
   return `${v.toFixed(2)}%`;
 }
 function getEngagementLabel(v: number) {
-  if (v >= 0.85) return "Высокая";
-  if (v >= 0.7) return "Хорошая";
-  if (v >= 0.5) return "Средняя";
+  if (v >= 0.66) return "Высокая";
+  if (v >= 0.33) return "Средняя";
   return "Низкая";
 }
 function translateEngagementLevel(level: string) {
-  const map: Record<string, string> = { high: "Высокий", good: "Хороший", medium: "Средний", low: "Низкий", insufficient_data: "Недостаточно данных" };
+  const map: Record<string, string> = { high: "Высокий", medium: "Средний", low: "Низкий", insufficient_data: "Недостаточно данных" };
   return map[level] || level;
 }
 function engagementLevelColor(level: string): { bg: string; color: string } {
   const m: Record<string, { bg: string; color: string }> = {
-    high: { bg: "#dcfce7", color: "#16a34a" }, good: { bg: "#d1fae5", color: "#059669" },
+    high: { bg: "#dcfce7", color: "#16a34a" },
     medium: { bg: "#fef9c3", color: "#ca8a04" }, low: { bg: "#fee2e2", color: "#dc2626" },
   };
   return m[level] ?? { bg: "#f1f5f9", color: "#64748b" };

@@ -71,8 +71,7 @@ const STATUS_LABELS: Record<string, { label: string; bg: string; color: string }
 };
 
 function levelInfo(idx: number): { label: string; bg: string; color: string } {
-  if (idx >= 0.75) return { label: "Высокая", bg: "#dcfce7", color: "#15803d" };
-  if (idx >= 0.55) return { label: "Хорошая", bg: "#d1fae5", color: "#059669" };
+  if (idx >= 0.66) return { label: "Высокая", bg: "#dcfce7", color: "#15803d" };
   if (idx >= 0.33) return { label: "Средняя", bg: "#fef9c3", color: "#ca8a04" };
   return { label: "Низкая", bg: "#fee2e2", color: "#dc2626" };
 }
